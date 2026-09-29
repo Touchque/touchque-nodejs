@@ -37,6 +37,9 @@
 // `getLoginUser` so POST /login and the offline routes only work for a user
 // who already passed YOUR first factor (password step): then nobody can make
 // TouchQue push to, or lock out, an arbitrary user through your server.
+// The offline routes are OFF until you do (or explicitly opt out with
+// `allowOfflineWithoutFirstFactor`): with the username taken from the body,
+// anyone could burn a user's offline attempts and lock them out.
 
 import { Router, Request, Response } from 'express';
 import { TouchQue } from './index';
@@ -71,6 +74,14 @@ export interface TouchQueRouterOptions {
    * `req.ip` must be the real client (configure Express `trust proxy`).
    */
   rateLimit?: RateLimitOptions | false;
+
+  /**
+   * The offline routes (/offline/challenge, /offline/verify, /offline/totp)
+   * answer 403 OFFLINE_REQUIRES_FIRST_FACTOR unless `getLoginUser` is set.
+   * Set this to `true` only if you really want them to trust the username in
+   * the request body (e.g. your own gateway already authenticated the user).
+   */
+  allowOfflineWithoutFirstFactor?: boolean;
 
   /** LoginType passed to the classic-2FA POST /login route. Default: 'LOGIN'. */
   actionType?: string;
@@ -161,11 +172,24 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   const router = Router();
   const limiter = options.rateLimit === false ? null : new FixedWindowLimiter(options.rateLimit || {});
 
+  const offlineEnabled = Boolean(getLoginUser) || options.allowOfflineWithoutFirstFactor === true;
+
   if (!getLoginUser && !warnedPreAuth) {
     warnedPreAuth = true;
-    console.warn('[TouchQue] touchqueRouter: POST /login and the offline routes take the username from the request body. '
-      + 'Set `getLoginUser` to bind them to your first factor (password step) so they cannot be used to push to arbitrary users.');
+    console.warn('[TouchQue] touchqueRouter: POST /login takes the username from the request body'
+      + (offlineEnabled ? ', and so do the offline routes' : '; the offline routes are disabled until you set it')
+      + '. Set `getLoginUser` to bind them to your first factor (password step) so they cannot be used against arbitrary users.');
   }
+
+  /** Answers 403 and returns false when the offline routes are not enabled. */
+  const offlineAllowed = (res: Response): boolean => {
+    if (offlineEnabled) return true;
+    res.status(403).json({
+      error: 'OFFLINE_REQUIRES_FIRST_FACTOR',
+      message: 'Offline sign-in is disabled: configure getLoginUser (or allowOfflineWithoutFirstFactor) on the TouchQue router.',
+    });
+    return false;
+  };
 
   /** Answers 429 and returns false when this IP or this user is over the limit for `route`. */
   const allow = (req: Request, res: Response, route: string, user?: string): boolean => {
@@ -280,6 +304,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   // The username used for onAuthenticated is the one TouchQue returns for the
   // challenge/code, never the one in the request body.
   router.post('/offline/challenge', async (req, res) => {
+    if (!offlineAllowed(res)) return;
     const externalUsername = await loginUser(req, res, 'externalUsername');
     if (!externalUsername || !allow(req, res, 'offline-challenge', externalUsername)) return;
     try {
@@ -297,7 +322,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   });
 
   router.post('/offline/verify', async (req, res) => {
-    if (!allow(req, res, 'offline-verify')) return;
+    if (!offlineAllowed(res) || !allow(req, res, 'offline-verify')) return;
     try {
       const r = await tq.offline.verify({ challengeId: String(req.body?.challengeId || ''), code: String(req.body?.code || '') });
       if (!r.approved || !r.externalUsername) {
@@ -322,6 +347,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   });
 
   router.post('/offline/totp', async (req, res) => {
+    if (!offlineAllowed(res)) return;
     const externalUsername = await loginUser(req, res, 'externalUsername');
     if (!externalUsername || !allow(req, res, 'offline-totp', externalUsername)) return;
     try {

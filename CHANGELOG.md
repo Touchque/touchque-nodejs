@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.0] — 2026-09-29
+
+### Security
+- **Webhook replay protection.** `webhook.verify()` now rejects a webhook whose
+  signed `timestamp` is missing or unparseable (previously the freshness check
+  was silently skipped). New `replayCache` option (`MemoryWebhookReplayCache`,
+  or your own `WebhookReplayCache` over Redis/DB): a second delivery of the
+  same `jti` throws `TouchQueWebhookReplayError` (a subclass of
+  `TouchQueWebhookSignatureError`) — answer 200 to it, it is a duplicate.
+- **`verifyApprovalProof` fails closed without a pinned key.** It now returns
+  `false` unless `expectedPublicKey` is given, or `allowUnpinnedKey: true` is
+  passed explicitly (trust-on-first-use: store `proof.publicKey` and pin it
+  from then on). **Behavior change:** callers that did not pin now get `false`.
+- **`touchqueRouter` offline routes are off without a first factor.**
+  `/offline/challenge`, `/offline/verify` and `/offline/totp` answer 403
+  `OFFLINE_REQUIRES_FIRST_FACTOR` unless `getLoginUser` is set (or
+  `allowOfflineWithoutFirstFactor: true`), so they can't be used to burn an
+  arbitrary user's offline attempts. **Behavior change** for routers without
+  `getLoginUser`.
+
 ## [2.0.0] — 2026-09-28
 
 ### Added

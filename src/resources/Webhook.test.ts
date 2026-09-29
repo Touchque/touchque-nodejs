@@ -1,7 +1,7 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
 import * as crypto from 'crypto';
-import { Webhook } from './Webhook';
-import { TouchQueWebhookSignatureError } from '../errors';
+import { Webhook, MemoryWebhookReplayCache } from './Webhook';
+import { TouchQueWebhookSignatureError, TouchQueWebhookReplayError } from '../errors';
 
 const SECRET = 'whsec_test';
 
@@ -134,5 +134,60 @@ describe('Webhook.verify — matches the backend signing scheme', () => {
 
     expect(result.requestId).toBe('req_1');
     expect(result.context).toEqual({ z: 1, a: 2, inner: { y: true, x: false } });
+  });
+});
+
+describe('Webhook.verify — replay protection (A12)', () => {
+  test('a signed webhook without a timestamp is rejected, not waved through', () => {
+    const webhook = new Webhook(SECRET);
+    const { timestamp: _t, ...noTs } = freshPayload();
+    const { rawBody, signature } = serverWebhook(noTs);
+    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchQueWebhookSignatureError);
+  });
+
+  test('an unparseable timestamp is rejected', () => {
+    const webhook = new Webhook(SECRET);
+    const { rawBody, signature } = serverWebhook(freshPayload({ timestamp: 'not-a-date' }));
+    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchQueWebhookSignatureError);
+  });
+
+  test('with a replay cache, the second delivery of the same jti throws TouchQueWebhookReplayError', () => {
+    const webhook = new Webhook(SECRET);
+    const replayCache = new MemoryWebhookReplayCache();
+    const { rawBody, signature } = serverWebhook(freshPayload({ jti: 'jti_once' }));
+    expect(webhook.verify({ rawBody, signature, replayCache }).jti).toBe('jti_once');
+    let caught: unknown;
+    try { webhook.verify({ rawBody, signature, replayCache }); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(TouchQueWebhookReplayError);
+    expect(caught).toBeInstanceOf(TouchQueWebhookSignatureError); // old catch blocks still reject it
+    expect((caught as TouchQueWebhookReplayError).jti).toBe('jti_once');
+  });
+
+  test('a different jti passes; a missing jti is rejected when a cache is configured', () => {
+    const webhook = new Webhook(SECRET);
+    const replayCache = new MemoryWebhookReplayCache();
+    const a = serverWebhook(freshPayload({ jti: 'a' }));
+    const b = serverWebhook(freshPayload({ jti: 'b' }));
+    webhook.verify({ ...a, replayCache });
+    expect(() => webhook.verify({ ...b, replayCache })).not.toThrow();
+    const { jti: _j, ...noJti } = freshPayload();
+    expect(() => webhook.verify({ ...serverWebhook(noJti), replayCache })).toThrow(TouchQueWebhookSignatureError);
+  });
+
+  test('a forged webhook never poisons the cache', () => {
+    const webhook = new Webhook(SECRET);
+    const replayCache = new MemoryWebhookReplayCache();
+    const forged = serverWebhook(freshPayload({ jti: 'victim' }), 'wrong-secret');
+    expect(() => webhook.verify({ ...forged, replayCache })).toThrow();
+    expect(() => webhook.verify({ ...serverWebhook(freshPayload({ jti: 'victim' })), replayCache })).not.toThrow();
+  });
+
+  test('MemoryWebhookReplayCache forgets entries after their TTL', () => {
+    vi.useFakeTimers();
+    const cache = new MemoryWebhookReplayCache();
+    expect(cache.checkAndSet('x', 10)).toBe(true);
+    expect(cache.checkAndSet('x', 10)).toBe(false);
+    vi.advanceTimersByTime(11_000);
+    expect(cache.checkAndSet('x', 10)).toBe(true);
   });
 });

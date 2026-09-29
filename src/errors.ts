@@ -97,6 +97,22 @@ export class TouchQueWebhookSignatureError extends TouchQueError {
 }
 
 /**
+ * Thrown when a correctly signed webhook has already been accepted once (same
+ * `jti`). Usually a TouchQue retry of a delivery you already processed —
+ * answer 200 so it stops, but do not run your side effects again. Extends
+ * `TouchQueWebhookSignatureError`, so existing `catch` blocks still reject it.
+ */
+export class TouchQueWebhookReplayError extends TouchQueWebhookSignatureError {
+  readonly jti: string;
+  constructor(jti: string) {
+    super();
+    this.message = 'TouchQue: This webhook (jti) was already accepted.';
+    this.name = 'TouchQueWebhookReplayError';
+    this.jti = jti;
+  }
+}
+
+/**
  * Thrown when SDK is used before being properly configured.
  */
 export class TouchQueConfigError extends TouchQueError {

@@ -282,6 +282,21 @@ export interface VerifyWebhookOptions {
    * disable the freshness check.
    */
   toleranceSeconds?: number;
+  /**
+   * De-duplicates deliveries by their signed `jti`. A second delivery with
+   * the same `jti` throws `TouchQueWebhookReplayError`. Use
+   * `MemoryWebhookReplayCache` for a single process, or implement this
+   * interface over Redis / your database when you run several instances.
+   */
+  replayCache?: WebhookReplayCache;
+}
+
+/**
+ * Storage for webhook `jti`s already accepted. `checkAndSet` must atomically
+ * record `jti` for `ttlSeconds` and return `true` if it was NOT seen before.
+ */
+export interface WebhookReplayCache {
+  checkAndSet(jti: string, ttlSeconds: number): boolean;
 }
 
 export interface WebhookPayload {

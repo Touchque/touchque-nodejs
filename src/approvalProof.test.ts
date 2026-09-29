@@ -38,7 +38,8 @@ describe('verifyApprovalProof', () => {
   test('rejects any change to the transaction the partner expects', () => {
     const d = makeDevice();
     const proof = d.proofFor(message);
-    const ok = { requestId: 'req-1', type: 'WITHDRAW', challengeCode: '47', details };
+    const ok = { requestId: 'req-1', type: 'WITHDRAW', challengeCode: '47', details, expectedPublicKey: d.x963 };
+    expect(verifyApprovalProof(proof, ok)).toBe(true);
     expect(verifyApprovalProof(proof, { ...ok, details: { Amount: '9,999.00 USD', Recipient: 'Jane Doe' } })).toBe(false);
     expect(verifyApprovalProof(proof, { ...ok, details: undefined })).toBe(false);
     expect(verifyApprovalProof(proof, { ...ok, requestId: 'req-2' })).toBe(false);
@@ -54,7 +55,20 @@ describe('verifyApprovalProof', () => {
     // Attacker signs the right message with their own key: valid signature, wrong device.
     expect(verifyApprovalProof(attacker.proofFor(message), { ...ok, expectedPublicKey: d.x963 })).toBe(false);
     const forged = { ...d.proofFor(message), signature: attacker.proofFor(message).signature };
-    expect(verifyApprovalProof(forged, ok)).toBe(false);
+    expect(verifyApprovalProof(forged, { ...ok, allowUnpinnedKey: true })).toBe(false);
+  });
+
+  test('A13: fails closed without a pinned key, unless unpinned use is explicitly allowed', () => {
+    const d = makeDevice();
+    const attacker = makeDevice();
+    const ok = { requestId: 'req-1', type: 'WITHDRAW', challengeCode: '47', details };
+    // A self-consistent proof from a key nobody pinned is not enough on its own.
+    expect(verifyApprovalProof(attacker.proofFor(message), ok)).toBe(false);
+    expect(verifyApprovalProof(d.proofFor(message), ok)).toBe(false);
+    // Trust-on-first-use is an explicit, visible choice.
+    expect(verifyApprovalProof(d.proofFor(message), { ...ok, allowUnpinnedKey: true })).toBe(true);
+    // A pin always wins over allowUnpinnedKey.
+    expect(verifyApprovalProof(attacker.proofFor(message), { ...ok, allowUnpinnedKey: true, expectedPublicKey: d.x963 })).toBe(false);
   });
 
   test('never throws on malformed input', () => {

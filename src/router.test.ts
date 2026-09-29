@@ -244,9 +244,26 @@ describe('touchqueRouter — passkeys', () => {
 });
 
 describe('touchqueRouter — offline sign', () => {
+  // These cases exercise the routes themselves; the default (no first factor
+  // => offline routes off) is covered right below.
+  const UNBOUND = { allowOfflineWithoutFirstFactor: true };
+
+  test('A8: without getLoginUser the offline routes are off by default (403, TouchQue never called)', async () => {
+    const tq = fakeTq();
+    const app = appWithRouter(tq, { rateLimit: false });
+    for (const [path, body] of [['/touchque/offline/challenge', { externalUsername: 'victim@example.com' }], ['/touchque/offline/verify', { challengeId: 'c1', code: 'AAAAAAA' }], ['/touchque/offline/totp', { externalUsername: 'victim@example.com', code: 'AAAAAAA' }]] as const) {
+      const res = await request(app).post(path).send(body);
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('OFFLINE_REQUIRES_FIRST_FACTOR');
+    }
+    expect((tq.offline as any).challenge).not.toHaveBeenCalled();
+    expect((tq.offline as any).verify).not.toHaveBeenCalled();
+    expect((tq.offline as any).verifyTotp).not.toHaveBeenCalled();
+  });
+
   test('POST /offline/challenge issues a QR for the typed user with the caller\'s IP/UA and getDetails()', async () => {
     const tq = fakeTq();
-    const app = appWithRouter(tq, { getDetails: () => ({ Action: 'Sign in' }) });
+    const app = appWithRouter(tq, { ...UNBOUND, getDetails: () => ({ Action: 'Sign in' }) });
     const res = await request(app).post('/touchque/offline/challenge').set('User-Agent', 'Mozilla/5.0 (Macintosh)').send({ externalUsername: 'User@Example.com' });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ challengeId: 'c1', qr: 'TQ1.a.b', totpAvailable: true });
@@ -256,13 +273,13 @@ describe('touchqueRouter — offline sign', () => {
   });
 
   test('POST /offline/challenge 400s without externalUsername', async () => {
-    const res = await request(appWithRouter(fakeTq())).post('/touchque/offline/challenge').send({});
+    const res = await request(appWithRouter(fakeTq(), UNBOUND)).post('/touchque/offline/challenge').send({});
     expect(res.status).toBe(400);
   });
 
   test('POST /offline/verify calls onAuthenticated with the username TOUCHQUE returned, not the one in the body', async () => {
     const onAuthenticated = vi.fn();
-    const app = appWithRouter(fakeTq(), { onAuthenticated });
+    const app = appWithRouter(fakeTq(), { ...UNBOUND, onAuthenticated });
     const res = await request(app).post('/touchque/offline/verify').send({ challengeId: 'c1', code: 'ABC-DEFG', externalUsername: 'victim@example.com' });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ status: 'success', approved: true, requestId: 'c1' });
@@ -272,7 +289,7 @@ describe('touchqueRouter — offline sign', () => {
   test('POST /offline/verify: a wrong code is 401 and does NOT authenticate', async () => {
     const onAuthenticated = vi.fn();
     const tq = fakeTq({ offline: { verify: vi.fn(async () => ({ approved: false, reason: 'invalid_code', attemptsLeft: 4 })) } });
-    const res = await request(appWithRouter(tq, { onAuthenticated })).post('/touchque/offline/verify').send({ challengeId: 'c1', code: 'AAAAAAA' });
+    const res = await request(appWithRouter(tq, { ...UNBOUND, onAuthenticated })).post('/touchque/offline/verify').send({ challengeId: 'c1', code: 'AAAAAAA' });
     expect(res.status).toBe(401);
     expect(res.body).toMatchObject({ approved: false, reason: 'invalid_code', attemptsLeft: 4 });
     expect(onAuthenticated).not.toHaveBeenCalled();
@@ -281,7 +298,7 @@ describe('touchqueRouter — offline sign', () => {
   test('POST /offline/verify: expired / used / locked are 400 and do NOT authenticate', async () => {
     const onAuthenticated = vi.fn();
     const tq = fakeTq({ offline: { verify: vi.fn(async () => ({ approved: false, reason: 'expired' })) } });
-    const res = await request(appWithRouter(tq, { onAuthenticated })).post('/touchque/offline/verify').send({ challengeId: 'c1', code: 'AAAAAAA' });
+    const res = await request(appWithRouter(tq, { ...UNBOUND, onAuthenticated })).post('/touchque/offline/verify').send({ challengeId: 'c1', code: 'AAAAAAA' });
     expect(res.status).toBe(400);
     expect(onAuthenticated).not.toHaveBeenCalled();
   });
@@ -289,7 +306,7 @@ describe('touchqueRouter — offline sign', () => {
   test('POST /offline/totp verifies with the action type (so critical actions are refused) and authenticates', async () => {
     const onAuthenticated = vi.fn();
     const tq = fakeTq();
-    const res = await request(appWithRouter(tq, { onAuthenticated, actionType: 'LOGIN' })).post('/touchque/offline/totp').send({ externalUsername: 'User@Example.com', code: 'ABCDEFG' });
+    const res = await request(appWithRouter(tq, { ...UNBOUND, onAuthenticated, actionType: 'LOGIN' })).post('/touchque/offline/totp').send({ externalUsername: 'User@Example.com', code: 'ABCDEFG' });
     expect(res.status).toBe(200);
     expect((tq.offline.verifyTotp as any)).toHaveBeenCalledWith(expect.objectContaining({ externalUsername: 'user@example.com', code: 'ABCDEFG', type: 'LOGIN' }));
     expect(onAuthenticated).toHaveBeenCalledWith(expect.anything(), expect.anything(), { externalUsername: 'user@example.com', via: 'offline-totp' });
@@ -360,7 +377,7 @@ describe('touchqueRouter — abuse protection (pre-auth routes)', () => {
 
   test('one IP spraying many usernames is capped per IP', async () => {
     const tq = fakeTq();
-    const app = fixedIpApp(tq, { rateLimit: { perIp: 4, perUser: 100 } });
+    const app = fixedIpApp(tq, { allowOfflineWithoutFirstFactor: true, rateLimit: { perIp: 4, perUser: 100 } });
     const statuses: number[] = [];
     for (let i = 0; i < 6; i++) statuses.push((await request(app).post('/touchque/offline/challenge').set('X-Forwarded-For', '203.0.113.7').send({ externalUsername: `u${i}@example.com` })).status);
     expect(statuses.filter((s) => s === 429)).toHaveLength(2);
@@ -369,7 +386,7 @@ describe('touchqueRouter — abuse protection (pre-auth routes)', () => {
 
   test('offline code guessing is capped per IP', async () => {
     const tq = fakeTq({ offline: { verify: vi.fn(async () => ({ approved: false, reason: 'invalid_code', attemptsLeft: 3 })) } });
-    const app = fixedIpApp(tq, { rateLimit: { perIp: 3 } });
+    const app = fixedIpApp(tq, { allowOfflineWithoutFirstFactor: true, rateLimit: { perIp: 3 } });
     const statuses: number[] = [];
     for (let i = 0; i < 5; i++) statuses.push((await request(app).post('/touchque/offline/verify').set('X-Forwarded-For', '203.0.113.7').send({ challengeId: 'c1', code: 'AAAAAAA' })).status);
     expect(statuses).toEqual([401, 401, 401, 429, 429]);

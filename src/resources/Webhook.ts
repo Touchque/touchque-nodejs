@@ -2,8 +2,31 @@
 // Webhook signature verification — ensures incoming webhooks are from TouchQue.
 
 import * as crypto from 'crypto';
-import { TouchQueWebhookSignatureError } from '../errors';
-import { VerifyWebhookOptions, WebhookPayload } from '../types';
+import { TouchQueWebhookReplayError, TouchQueWebhookSignatureError } from '../errors';
+import { VerifyWebhookOptions, WebhookPayload, WebhookReplayCache } from '../types';
+
+/**
+ * In-process `WebhookReplayCache`. Entries expire after their TTL and the map
+ * is capped, so it can't grow without bound. Not shared between processes.
+ */
+export class MemoryWebhookReplayCache implements WebhookReplayCache {
+  private readonly seen = new Map<string, number>();
+  constructor(private readonly maxEntries = 100_000) {}
+
+  checkAndSet(jti: string, ttlSeconds: number): boolean {
+    const now = Date.now();
+    const expiresAt = this.seen.get(jti);
+    if (expiresAt !== undefined && expiresAt > now) return false;
+    if (this.seen.size >= this.maxEntries) {
+      for (const [key, exp] of this.seen) {
+        if (exp <= now || this.seen.size >= this.maxEntries) this.seen.delete(key);
+        if (this.seen.size < this.maxEntries * 0.9) break;
+      }
+    }
+    this.seen.set(jti, now + ttlSeconds * 1000);
+    return true;
+  }
+}
 
 /**
  * Reproduce the canonical string the TouchQue backend signs: the JSON body
@@ -32,9 +55,10 @@ export class Webhook {
    * return its parsed payload. Throws `TouchQueWebhookSignatureError` if the
    * signature is invalid, the body is malformed, or the webhook is stale.
    *
-   * **Always verify before processing, and de-duplicate on `payload.jti`
-   * (or `payload.requestId` + `payload.event`) so a replayed webhook can't
-   * re-trigger your logic.**
+   * **Always verify before processing.** Pass `replayCache` (e.g. a shared
+   * `MemoryWebhookReplayCache`, or your own Redis-backed one) so a replayed
+   * delivery throws `TouchQueWebhookReplayError` instead of re-running your
+   * logic; without it, de-duplicate on `payload.jti` yourself.
    *
    * @throws {TouchQueWebhookSignatureError}
    *
@@ -45,11 +69,13 @@ export class Webhook {
    *     const event = tq.webhook.verify({
    *       rawBody: req.body.toString('utf8'),
    *       signature: req.headers['x-signature'] as string,
+   *       replayCache, // const replayCache = new MemoryWebhookReplayCache();
    *     });
-   *     // ... handle event.event, guarded by an idempotency check on event.jti
+   *     // ... handle event
    *     res.sendStatus(200);
-   *   } catch {
-   *     res.sendStatus(403); // not from TouchQue, tampered, or replayed
+   *   } catch (err) {
+   *     if (err instanceof TouchQueWebhookReplayError) return res.sendStatus(200); // already handled
+   *     res.sendStatus(403); // not from TouchQue, tampered, or stale
    *   }
    * });
    */
@@ -97,13 +123,24 @@ export class Webhook {
       throw new TouchQueWebhookSignatureError();
     }
 
-    // Replay protection: reject a webhook whose timestamp is too far from now.
+    // Replay protection: reject a webhook whose signed timestamp is missing,
+    // unparseable or too far from now. TouchQue always sends one, so a
+    // missing timestamp is never "skip the check" — it fails closed.
     const tolerance = options.toleranceSeconds ?? 300;
-    if (tolerance > 0 && typeof payload.timestamp === 'string') {
-      const ts = Date.parse(payload.timestamp);
-      if (!Number.isNaN(ts) && Math.abs(Date.now() - ts) > tolerance * 1000) {
+    if (tolerance > 0) {
+      const ts = typeof payload.timestamp === 'string' ? Date.parse(payload.timestamp) : NaN;
+      if (Number.isNaN(ts) || Math.abs(Date.now() - ts) > tolerance * 1000) {
         throw new TouchQueWebhookSignatureError();
       }
+    }
+
+    if (options.replayCache) {
+      const jti = payload.jti;
+      if (typeof jti !== 'string' || !jti) throw new TouchQueWebhookSignatureError();
+      // Remember it for twice the window, so it outlives any timestamp that
+      // could still pass the freshness check.
+      const ttl = Math.max(tolerance * 2, 600);
+      if (!options.replayCache.checkAndSet(jti, ttl)) throw new TouchQueWebhookReplayError(jti);
     }
 
     return payload as WebhookPayload;

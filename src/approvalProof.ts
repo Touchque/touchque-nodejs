@@ -38,10 +38,19 @@ export interface VerifyApprovalProofOptions {
    */
   challengeCode?: string;
   /**
-   * Pin the device: the base64 public key you stored when the user enrolled.
-   * When given, a proof from any other key is rejected. Strongly recommended.
+   * Pin the device: the base64 public key you stored for this user (e.g. the
+   * `proof.publicKey` of their first verified approval). A proof from any
+   * other key is rejected. Required unless `allowUnpinnedKey` is set.
    */
   expectedPublicKey?: string;
+  /**
+   * Accept a proof from whatever key it carries. Without a pinned key the
+   * proof only shows that *some* key signed these details — anyone able to
+   * forge the webhook or status response could bring their own. Only for
+   * trust-on-first-use: store `proof.publicKey` after this first check and
+   * pass it as `expectedPublicKey` from then on.
+   */
+  allowUnpinnedKey?: boolean;
 }
 
 function toPairs(details?: LoginRequestDetails): Array<{ label: string; value: string }> {
@@ -62,8 +71,9 @@ export function detailsDigest(details?: LoginRequestDetails): string {
 
 /**
  * Returns true only if the proof was signed by the device's key over exactly
- * the request, type, challenge code and details you expect. Never throws for
- * malformed input; returns false.
+ * the request, type, challenge code and details you expect. Fails closed:
+ * without `expectedPublicKey` (or an explicit `allowUnpinnedKey: true`) it
+ * returns false. Never throws for malformed input; returns false.
  */
 export function verifyApprovalProof(
   proof: ApprovalProof | null | undefined,
@@ -71,7 +81,11 @@ export function verifyApprovalProof(
 ): boolean {
   try {
     if (!proof || proof.version !== 'v2' || proof.algorithm !== 'ECDSA-P256-SHA256') return false;
-    if (options.expectedPublicKey && proof.publicKey !== options.expectedPublicKey) return false;
+    if (options.expectedPublicKey) {
+      if (proof.publicKey !== options.expectedPublicKey) return false;
+    } else if (options.allowUnpinnedKey !== true) {
+      return false;
+    }
 
     const expectedMessage = [
       'touchque-approve:v2',

@@ -105,6 +105,9 @@ import { touchqueRouter } from '@touchque/node';
 
 app.use(touchqueRouter(tq, {
   getUserId: (req) => req.session.user?.email,
+  // The user who already passed your password step. Binds POST /login and the
+  // offline routes to them; the offline routes stay off (403) without it.
+  getLoginUser: (req) => req.session.passwordVerifiedUser,
 }));
 ```
 
