@@ -129,7 +129,7 @@ browser signs your site's real origin and TouchQue refuses any other
 
 ```typescript
 const ch = await tq.offline.challenge({
-  user: 'jane@acme.com',
+  externalUsername: 'jane@acme.com',
   type: 'WITHDRAW',
   details: { Amount: '1,250.00 USD', Recipient: 'Jane Doe' },
 });
