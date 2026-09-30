@@ -308,14 +308,20 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
     const externalUsername = await loginUser(req, res, 'externalUsername');
     if (!externalUsername || !allow(req, res, 'offline-challenge', externalUsername)) return;
     try {
+      // `requestId` (the push this QR follows) makes a phone-side rejection kill the QR and carries the number.
+      const requestId = typeof req.body?.requestId === 'string' && req.body.requestId ? req.body.requestId : undefined;
       const c = await tq.offline.challenge({
         externalUsername,
         type: actionType,
         clientIp: req.ip,
         userAgent: req.get('user-agent'),
         details: getDetails ? await getDetails(req) : undefined,
+        requestId,
       });
-      res.json({ challengeId: c.challengeId, qr: c.qr, qrDataUrl: c.qrDataUrl, expiresAt: c.expiresAt, expiresInSeconds: c.expiresInSeconds, totpAvailable: c.totpAvailable });
+      res.json({
+        challengeId: c.challengeId, qr: c.qr, qrDataUrl: c.qrDataUrl, expiresAt: c.expiresAt, expiresInSeconds: c.expiresInSeconds, totpAvailable: c.totpAvailable,
+        ...(c.challengeCode && { challengeCode: c.challengeCode }),
+      });
     } catch (error) {
       sendRelayError(res, error);
     }
@@ -356,6 +362,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
         code: String(req.body?.code || ''),
         type: actionType,
         clientIp: req.ip,
+        requestId: typeof req.body?.requestId === 'string' && req.body.requestId ? req.body.requestId : undefined,
       });
       if (!r.approved || !r.externalUsername) {
         res.status(r.reason === 'invalid_code' ? 401 : 400).json({ approved: false, reason: r.reason });

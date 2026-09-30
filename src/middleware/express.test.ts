@@ -187,6 +187,50 @@ describe('requireTouchQue — one line, full flow', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  test('a phone-side reject kills the offline QR: no code finishes it, no new QR, the page is told straight away', async () => {
+    api.linked.add('jane@acme.com');
+    const { app, handler } = partnerApp();
+    const start = await send(app, { amount: 1 });
+    const off = await send(app, { amount: 1 }, { 'x-touchque-token': start.body.token, 'x-touchque-offline': '1' });
+    expect(off.body.touchque.state).toBe('offline');
+    // The QR is linked to the push the user started.
+    const qr = api.calls.filter((c) => c.path === '/offline/challenge').pop()!;
+    expect(qr.body.requestId).toBe(start.body.touchque.requestId);
+
+    // While the QR is up the page keeps polling; nothing changes until the phone answers.
+    const poll = await send(app, { amount: 1 }, { 'x-touchque-token': off.body.token });
+    expect(poll.status).toBe(202);
+    expect(poll.body.touchque).toMatchObject({ state: 'offline', offline: { challengeId: off.body.touchque.offline.challengeId } });
+
+    api.reject(); // the user taps Reject on the phone
+
+    const rejected = await send(app, { amount: 1 }, { 'x-touchque-token': poll.body.token });
+    expect(rejected.status).toBe(403);
+    expect(rejected.body.touchque.state).toBe('rejected');
+
+    // Even the right code from the QR that was already on screen does not finish it…
+    const late = await send(app, { amount: 1 }, { 'x-touchque-token': off.body.token, 'x-touchque-code': 'ABCD123' });
+    expect(late.status).toBe(403);
+    expect(late.body.touchque).toMatchObject({ state: 'rejected', reason: 'request_rejected' });
+    // …the time-based code doesn't either…
+    const totp = await send(app, { amount: 1 }, { 'x-touchque-token': off.body.token, 'x-touchque-code': '123456', 'x-touchque-code-type': 'totp' });
+    expect(totp.body.touchque.state).toBe('rejected');
+    // …and pressing "offline mode" again gets no QR for that sign-in.
+    const again = await send(app, { amount: 1 }, { 'x-touchque-token': start.body.token, 'x-touchque-offline': '1' });
+    expect(again.body.touchque.state).toBe('rejected');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  test('offline QR with number matching: the page gets the number to print under the QR', async () => {
+    api.linked.add('jane@acme.com');
+    api.opts.numberMatch = true;
+    const { app } = partnerApp();
+    const start = await send(app, { amount: 1 });
+    expect(start.body.touchque.number).toBe('47');
+    const off = await send(app, { amount: 1 }, { 'x-touchque-token': start.body.token, 'x-touchque-offline': '1' });
+    expect(off.body.touchque.offline.challengeCode).toBe('47');
+  });
+
   test('offline time-based code (no camera)', async () => {
     api.linked.add('jane@acme.com');
     const { app } = partnerApp('LOGIN');

@@ -138,6 +138,21 @@ const ch = await tq.offline.challenge({
 const { approved } = await tq.offline.verify({ challengeId: ch.challengeId, code });
 ```
 
+**A QR that follows a push.** Pass the push's `requestId` when the offline QR is the fallback for a
+push the user already started (`requireTouchQue` / `touchqueRouter` do this for you):
+
+```typescript
+const ch = await tq.offline.challenge({ externalUsername, type: 'LOGIN', requestId: step.requestId });
+// ch.challengeCode is the number to print under the QR when number matching applies.
+```
+
+- If the user **rejects the push on the phone, the offline QR dies with it**: no new QR is issued for that
+  sign-in (`409 request_rejected`), a code for a QR already on screen is refused (`reason: 'request_rejected'`)
+  and so is the time-based code (`verifyTotp({ …, requestId })`). Treat it as a final "no".
+- With number matching, the page prints `ch.challengeCode` under the QR; the phone shows it among two decoys
+  after scanning and the user taps the one that matches. The phone is never told which is right — a wrong tap
+  produces a code that fails verification.
+
 ## Webhooks
 
 ```typescript

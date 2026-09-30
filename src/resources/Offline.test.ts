@@ -26,6 +26,24 @@ describe('Offline resource', () => {
     });
   });
 
+  test('challenge() links the QR to its push and asks for number matching; the number comes back', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ challengeId: 'c1', qr: 'TQ2.x', qrDataUrl: null, expiresAt: 't', expiresInSeconds: 120, totpAvailable: false, challengeCode: '47' });
+    const offline = new Offline(http);
+    const ch = await offline.challenge({ externalUsername: 'a@b.com', type: 'LOGIN', requestId: 'req-1', requireNumberMatch: true });
+    expect(http.post).toHaveBeenCalledWith('/offline/challenge', { externalUsername: 'a@b.com', type: 'LOGIN', requestId: 'req-1', requireNumberMatch: true });
+    expect(ch.challengeCode).toBe('47');
+  });
+
+  test('verifyTotp() forwards requestId; a rejected request comes back as a not-approved result', async () => {
+    const http = fakeHttp();
+    const offline = new Offline(http);
+    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(410, { approved: false, reason: 'request_rejected' } as any));
+    const r = await offline.verifyTotp({ externalUsername: 'a@b.com', code: 'ABCDEFG', requestId: 'req-1' });
+    expect((http.post as any).mock.calls[0][1]).toMatchObject({ requestId: 'req-1' });
+    expect(r).toEqual({ approved: false, reason: 'request_rejected', attemptsLeft: undefined });
+  });
+
   test('verify() resolves { approved: true } on success', async () => {
     const http = fakeHttp();
     (http.post as any).mockResolvedValue({ approved: true, challengeId: 'c1', externalUsername: 'a@b.com', type: 'LOGIN' });

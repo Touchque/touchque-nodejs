@@ -23,7 +23,7 @@ export type StepState =
   | 'expired'
   | 'enroll' // no phone linked yet — show `enroll.qrCodeDataUrl`
   | 'passkey_required' // policy: approve with a passkey (browser ceremony)
-  | 'offline' // offline approval started — show `offline.qrDataUrl`, ask for the code
+  | 'offline' // offline approval started — show `offline.qrDataUrl` (and `offline.challengeCode`), ask for the code
   | 'blocked' // refused by policy / risk / action disabled — see `reason`
   | 'frozen' // too many rejections — see `retryAfter`
   | 'rate_limited'; // too many requests — see `retryAfter`
@@ -37,7 +37,15 @@ export interface Step {
   /** Transaction details the phone shows (amount, recipient…). */
   details?: Array<{ label: string; value: string }>;
   enroll?: { qrCodeDataUrl: string; recoveryCodes?: string[]; expiresAt?: string };
-  offline?: { challengeId: string; qrDataUrl?: string; expiresAt?: string; totpAvailable?: boolean; attemptsLeft?: number };
+  offline?: {
+    challengeId: string;
+    qrDataUrl?: string;
+    expiresAt?: string;
+    totpAvailable?: boolean;
+    attemptsLeft?: number;
+    /** Number matching: print this under the QR; the phone offers it among two decoys. */
+    challengeCode?: string;
+  };
   reason?: string;
   retryAfter?: number;
   assurance?: ApprovalAssurance;

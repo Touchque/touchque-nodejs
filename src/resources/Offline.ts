@@ -38,7 +38,7 @@ export class Offline {
    *   userAgent: req.get('user-agent'),
    *   details: { Amount: '1,250.00 USD', Recipient: 'Jane Doe' },
    * });
-   * // show ch.qrDataUrl, then later:
+   * // show ch.qrDataUrl (and ch.challengeCode under it when present), then later:
    * const { approved } = await tq.offline.verify({ challengeId: ch.challengeId, code });
    */
   async challenge(options: OfflineChallengeOptions): Promise<OfflineChallengeResponse> {
@@ -50,6 +50,8 @@ export class Offline {
       ...(options.userAgent && { userAgent: options.userAgent }),
       ...(options.ttlSeconds !== undefined && { ttlSeconds: options.ttlSeconds }),
       ...(options.includeQrImage === false && { includeQrImage: false }),
+      ...(options.requestId && { requestId: options.requestId }),
+      ...(options.requireNumberMatch === true && { requireNumberMatch: true }),
     });
   }
 
@@ -77,6 +79,7 @@ export class Offline {
         code: options.code,
         ...(options.type && { type: options.type }),
         ...(options.clientIp && { clientIp: options.clientIp }),
+        ...(options.requestId && { requestId: options.requestId }),
       })
     );
   }

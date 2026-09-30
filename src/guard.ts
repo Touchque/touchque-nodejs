@@ -89,7 +89,7 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
     if (bound && input.code && (bound.st === 'offline' || input.codeType === 'totp')) {
       const totp = input.codeType === 'totp';
       const res = totp
-        ? await r.offline.verifyTotp({ externalUsername: user, code: input.code, type: action, clientIp: input.ip })
+        ? await r.offline.verifyTotp({ externalUsername: user, code: input.code, type: action, clientIp: input.ip, requestId: bound.rid })
         : await r.offline.verify({ challengeId: String(bound.oc), code: input.code });
       const forThis = (!res.externalUsername || res.externalUsername.toLowerCase() === user.toLowerCase()) && (!res.type || res.type === action);
       if (res.approved && forThis) {
@@ -103,22 +103,33 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
         };
       }
       if (res.reason === 'invalid_code' && !totp) {
-        return issue({ state: 'offline', offline: { challengeId: String(bound.oc), attemptsLeft: res.attemptsLeft } }, { oc: bound.oc });
+        return issue({ state: 'offline', offline: { challengeId: String(bound.oc), attemptsLeft: res.attemptsLeft } }, { oc: bound.oc, rid: bound.rid, n: bound.n });
       }
-      if (res.reason === 'invalid_code') return issue({ state: 'offline', reason: 'invalid_code' }, { oc: bound.oc });
+      if (res.reason === 'invalid_code') return issue({ state: 'offline', reason: 'invalid_code' }, { oc: bound.oc, rid: bound.rid, n: bound.n });
+      // The phone rejected the push this QR belongs to: the whole sign-in is over, no other factor may finish it.
+      if (res.reason === 'request_rejected') return issue({ state: 'rejected', requestId: bound.rid, reason: 'request_rejected' });
       return issue({ state: res.reason === 'expired' ? 'expired' : 'blocked', reason: res.reason || 'offline_failed' });
     }
 
     if (input.offline) {
       try {
+        // Link the QR to the push it follows: a phone-side rejection then kills it, and a push that asked for
+        // number matching makes the QR ask for the same number.
         const ch = await r.offline.challenge({
           externalUsername: user, type: action, details: details.length ? details : undefined, clientIp: input.ip, userAgent: input.userAgent,
+          requestId: bound?.rid,
         });
         return issue({
           state: 'offline',
-          offline: { challengeId: ch.challengeId, qrDataUrl: ch.qrDataUrl || undefined, expiresAt: ch.expiresAt, totpAvailable: ch.totpAvailable },
-        });
+          offline: {
+            challengeId: ch.challengeId, qrDataUrl: ch.qrDataUrl || undefined, expiresAt: ch.expiresAt, totpAvailable: ch.totpAvailable,
+            ...(ch.challengeCode && { challengeCode: ch.challengeCode }),
+          },
+        }, { rid: bound?.rid, n: ch.challengeCode || bound?.n });
       } catch (err) {
+        if (err instanceof TouchQueAPIError && err.status === 409 && (err.code || (err.data as { error?: string })?.error) === 'request_rejected') {
+          return issue({ state: 'rejected', requestId: bound?.rid, reason: 'request_rejected' });
+        }
         if (err instanceof TouchQueAPIError && err.status < 500) {
           return issue({ state: 'blocked', reason: err.code || (err.data as { error?: string })?.error || 'offline_unavailable' });
         }
@@ -126,8 +137,9 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
       }
     }
 
-    // Waiting on a push / passkey: poll, and run the action once it is approved.
-    if (bound && bound.rid && (bound.st === 'waiting' || bound.st === 'passkey_required')) {
+    // Waiting on a push / passkey — or showing the offline QR next to a push that is still open: poll,
+    // and run the action once it is approved. While the QR is up a phone-side REJECT ends the attempt at once.
+    if (bound && bound.rid && (bound.st === 'waiting' || bound.st === 'passkey_required' || bound.st === 'offline')) {
       const now = await check(r, bound.rid);
       if (now.state === 'approved') {
         try {
@@ -136,6 +148,10 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
           if (err instanceof TouchQueAPIError && err.status === 409) return issue({ state: 'expired', reason: err.code || 'already_used' });
           throw err;
         }
+      }
+      if (bound.st === 'offline' && (now.state === 'waiting' || now.state === 'expired' || now.state === 'passkey_required')) {
+        // Still (or no longer) pending: nothing changed for the user — keep showing the QR they have.
+        return issue({ state: 'offline', offline: { challengeId: String(bound.oc) } }, { oc: bound.oc, rid: bound.rid, n: bound.n });
       }
       if (now.state === 'waiting' || now.state === 'passkey_required') {
         return issue({ state: now.state, requestId: bound.rid, number: bound.n }, { n: bound.n });

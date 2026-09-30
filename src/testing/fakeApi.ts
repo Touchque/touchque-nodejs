@@ -40,7 +40,7 @@ export async function startFakeApi(): Promise<FakeApi> {
     actions: new Map([['LOGIN', { critical: false, active: true }], ['SEND_MONEY', { critical: true, active: true }]]),
     calls: [] as Array<{ method: string; path: string; body: any }>,
     opts: {} as FakeApi['opts'],
-    challenges: new Map<string, { user: string; type: string; used: boolean }>(),
+    challenges: new Map<string, { user: string; type: string; used: boolean; requestId?: string }>(),
   };
   let seq = 0;
   app.use((req, res, next) => {
@@ -108,20 +108,28 @@ export async function startFakeApi(): Promise<FakeApi> {
     res.json({ externalUsername: u, deviceId: api.linked.has(u) ? 'dev-1' : null, used: api.linked.has(u), frozen: false });
   });
 
+  // Like the real API: a QR that follows a push is tied to it. A request the phone REJECTED kills the QR
+  // (none is issued, a code is refused), and a push with number matching makes the QR show the same number.
   app.post('/offline/challenge', (req, res) => {
+    const linked = req.body.requestId ? api.requests.find((x) => x.id === req.body.requestId) : undefined;
+    if (req.body.requestId && !linked) return res.status(404).json({ error: 'request_not_found' });
+    if (linked?.status === 'REJECTED') return res.status(409).json({ error: 'request_rejected' });
     const id = `ch-${++seq}`;
-    api.challenges.set(id, { user: req.body.externalUsername, type: req.body.type, used: false });
-    res.json({ challengeId: id, qr: 'TQ2.x', qrDataUrl: 'data:image/png;base64,OFFLINE', expiresAt: 'soon', expiresInSeconds: 120, totpAvailable: true });
+    api.challenges.set(id, { user: req.body.externalUsername, type: req.body.type, used: false, requestId: linked?.id });
+    const challengeCode = linked?.challengeCode || (req.body.requireNumberMatch === true ? '47' : undefined);
+    res.json({ challengeId: id, qr: 'TQ2.x', qrDataUrl: 'data:image/png;base64,OFFLINE', expiresAt: 'soon', expiresInSeconds: 120, totpAvailable: true, ...(challengeCode && { challengeCode }) });
   });
   app.post('/offline/verify', (req, res) => {
     const ch = api.challenges.get(req.body.challengeId);
     if (!ch) return res.status(404).json({ approved: false, reason: 'unknown_challenge' });
     if (ch.used) return res.status(410).json({ approved: false, reason: 'used' });
+    if (ch.requestId && api.requests.find((x) => x.id === ch.requestId)?.status === 'REJECTED') return res.status(410).json({ approved: false, reason: 'request_rejected' });
     if (req.body.code !== (api.opts.offlineCode || 'ABCD123')) return res.status(401).json({ approved: false, reason: 'invalid_code', attemptsLeft: 4 });
     ch.used = true;
     res.json({ approved: true, challengeId: req.body.challengeId, externalUsername: ch.user, type: ch.type });
   });
   app.post('/offline/totp/verify', (req, res) => {
+    if (req.body.requestId && api.requests.find((x) => x.id === req.body.requestId)?.status === 'REJECTED') return res.status(410).json({ approved: false, reason: 'request_rejected' });
     if (req.body.code !== (api.opts.totpCode || '123456')) return res.status(401).json({ approved: false, reason: 'invalid_code' });
     res.json({ approved: true, externalUsername: req.body.externalUsername });
   });
