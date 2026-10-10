@@ -135,6 +135,27 @@ describe('Login resource', () => {
     expect(http.post).toHaveBeenCalledWith('/login/recovery', { requestId: 'req_1', code: 'ABCD-1234' });
     expect(result.success).toBe(true);
   });
+
+  test('reportFraud() POSTs the reason and note to /login/:id/report-fraud', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ reported: true, alreadyReported: false, requestId: 'req/1' });
+    const login = new Login(http);
+
+    const result = await login.reportFraud('req/1', { reason: 'chargeback', note: 'Disputed by card holder' });
+
+    expect(http.post).toHaveBeenCalledWith('/login/req%2F1/report-fraud', { reason: 'chargeback', note: 'Disputed by card holder' });
+    expect(result.alreadyReported).toBe(false);
+  });
+
+  test('reportFraud() sends an empty body by default and needs an id', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ reported: true, alreadyReported: true, requestId: 'req_1' });
+    const login = new Login(http);
+
+    await login.reportFraud('req_1');
+    expect(http.post).toHaveBeenCalledWith('/login/req_1/report-fraud', {});
+    await expect(login.reportFraud('')).rejects.toThrow('request id');
+  });
 });
 
 describe('Login — phishing-resistant policy', () => {

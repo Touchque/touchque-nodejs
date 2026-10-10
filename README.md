@@ -170,6 +170,35 @@ app.post('/webhooks/touchque', express.raw({ type: 'application/json' }), (req, 
 });
 ```
 
+## Verifying the device proof (no need to trust TouchQue)
+
+When the phone holds a hardware key, every approval carries `approvalProof`: the
+phone's own signature over the request id, action, number-match code and the
+exact details it showed. Check it yourself and pin the device key:
+
+```typescript
+import { verifyApprovalProof } from '@touchque/node';
+
+const ok = verifyApprovalProof(event.approvalProof, {
+  requestId, type: 'WITHDRAW', details, challengeCode,
+  expectedPublicKey: user.touchqueDeviceKey, // stored from their first verified approval
+});
+```
+
+Without `expectedPublicKey` it returns `false` unless you pass
+`allowUnpinnedKey: true` (trust on first use — store `proof.publicKey`, then pin it).
+
+## Reporting fraud
+
+Learned later that an approved request was fraud (a chargeback, an account
+takeover)? Report it — it is the strongest signal TouchQue's risk engine learns
+from, and it stays in your audit log:
+
+```typescript
+await tq.login.reportFraud(requestId, { reason: 'chargeback', note: 'Disputed by card holder' });
+// reason: 'chargeback' | 'account_takeover' | 'social_engineering' | 'other'
+```
+
 ## Errors
 
 All SDK errors extend `TouchQueError`: `TouchQueAPIError`, `TouchQueNetworkError`,

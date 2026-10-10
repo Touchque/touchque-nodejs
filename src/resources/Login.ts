@@ -198,4 +198,35 @@ export class Login {
       code: options.code,
     });
   }
+
+  /**
+   * Report a request you later learned was fraud — a chargeback, a confirmed
+   * account takeover, a scam the user was talked into. TouchQue's risk engine
+   * learns from it (it is the strongest signal it gets) and the report is
+   * kept in your audit log. The request's status does not change. Safe to
+   * call more than once: a repeat answers `alreadyReported: true`.
+   */
+  async reportFraud(requestId: string, options: ReportFraudOptions = {}): Promise<ReportFraudResponse> {
+    if (!requestId) throw new Error('reportFraud() needs the request id');
+    return this.http.post<ReportFraudResponse>(`/login/${encodeURIComponent(requestId)}/report-fraud`, {
+      ...(options.reason && { reason: options.reason }),
+      ...(options.note && { note: options.note }),
+    });
+  }
+}
+
+export type FraudReason = 'chargeback' | 'account_takeover' | 'social_engineering' | 'other';
+
+export interface ReportFraudOptions {
+  /** Default 'other'. */
+  reason?: FraudReason;
+  /** Free text for your audit log, at most 500 characters. */
+  note?: string;
+}
+
+export interface ReportFraudResponse {
+  reported: true;
+  /** true when this request had already been reported. */
+  alreadyReported: boolean;
+  requestId: string;
 }

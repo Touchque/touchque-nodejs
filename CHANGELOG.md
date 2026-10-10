@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.2.0] — 2026-10-11
+
+### Added
+- **`tq.login.reportFraud(requestId, { reason, note })`** — report a request you later learned
+  was fraud (chargeback, account takeover, social engineering). TouchQue's risk engine uses it as
+  its strongest training signal and it is kept in your audit log; the request's status does not
+  change. Idempotent (`alreadyReported: true` on a repeat).
+- `verifyApprovalProof` is now checked against the cross-SDK golden vectors
+  (`fixtures/approval-proof-vectors.json`) shared with the Python, PHP and Go SDKs.
+
 ## [3.1.0] — 2026-09-30
 
 ### Security
