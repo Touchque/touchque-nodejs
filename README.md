@@ -95,7 +95,11 @@ second call.
 ## Framework adapters
 
 - **Express**: `requireTouchQue(action, options?)` — shown above.
-- **Next.js / Fetch API route handlers**: `withTouchQue(action, options?)`.
+- **Next.js / Fetch API route handlers**: `withTouchQue(action, options?)`. It sends no end-user
+  address unless you say where it comes from: `ip: ipFromVercel` (Vercel), `ip: ipFromCloudflare`
+  (only when your origin accepts Cloudflare traffic only), `trustedProxyHops: 1` (one proxy of yours
+  in front), or your own function. Never the leftmost `X-Forwarded-For` hop: the client controls it.
+  Without an address the risk checks that need one (Tor, location, travel) are skipped.
 - **`touchqueRouter`**: mounts every relay route a frontend needs
   (`POST /login`, enrollment, passkey ceremonies, offline codes) so you don't
   hand-write them.

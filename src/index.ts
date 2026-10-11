@@ -160,7 +160,7 @@ export {
 } from './errors';
 
 export { requireTouchQue, TouchQueMiddlewareOptions } from './middleware/express';
-export { withTouchQue, WithTouchQueOptions } from './next';
+export { withTouchQue, WithTouchQueOptions, forwardedFor, ipFromVercel, ipFromCloudflare } from './next';
 export { runGuard, GUARD_HEADERS, GuardInput, GuardResult, GuardBody } from './guard';
 export { signGuardToken, verifyGuardToken, normalizeDetails } from './steps';
 export { touchqueRouter, TouchQueRouterOptions } from './router';

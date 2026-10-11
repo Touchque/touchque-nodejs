@@ -125,6 +125,29 @@ describe('touchqueRouter — classic login (two-phase)', () => {
     expect(res.body.touchque.enroll.qrCodeDataUrl).toBeTruthy();
   });
 
+  // R1-03: the browser polls every 1.5 s; with the default limiter the 6th
+  // poll used to be a 429 while the push was still on the phone.
+  test('polling a sent push is not counted against the default per-user limit', async () => {
+    const app = appWithRouter(api.client);
+    const first = await request(app).post('/touchque/login').send({ externalUsername: 'user@example.com' });
+    expect(first.status).toBe(202);
+    for (let i = 0; i < 12; i++) {
+      if (i === 9) api.approve();
+      const poll = await request(app).post('/touchque/login').set('X-TouchQue-Token', first.body.token).send({ externalUsername: 'user@example.com' });
+      if (i < 9) expect(poll.status).toBe(202);
+      else { expect(poll.status).toBe(200); break; }
+    }
+    // New attempts still are: 4 more starts fill the per-user budget of 5.
+    for (let i = 0; i < 4; i++) await request(app).post('/touchque/login').send({ externalUsername: 'user@example.com' });
+    expect((await request(app).post('/touchque/login').send({ externalUsername: 'user@example.com' })).status).toBe(429);
+  });
+
+  test('a forged or foreign token is a new attempt and is counted', async () => {
+    const app = appWithRouter(api.client);
+    for (let i = 0; i < 5; i++) await request(app).post('/touchque/login').set('X-TouchQue-Token', 'forged').send({ externalUsername: 'user@example.com' });
+    expect((await request(app).post('/touchque/login').set('X-TouchQue-Token', 'forged').send({ externalUsername: 'user@example.com' })).status).toBe(429);
+  });
+
   test('POST /login 400s without externalUsername', async () => {
     const res = await request(realApp()).post('/touchque/login').send({});
     expect(res.status).toBe(400);
@@ -437,5 +460,47 @@ describe('touchqueRouter — phishing-resistant policy', () => {
     const res = await request(app).post('/touchque/passkey/login/verify').send({ requestId: 'r', response: {} });
     expect(res.status).toBe(401);
     expect(onAuthenticated).not.toHaveBeenCalled();
+  });
+});
+
+// R2-12: a passkey approves requests on its own, so a stolen session of the
+// partner app must not be able to add one for a user with a linked phone.
+describe('touchqueRouter — adding a passkey', () => {
+  let api: FakeApi;
+  beforeEach(async () => { api = await startFakeApi(); });
+  afterEach(async () => { await api.close(); });
+
+  test('a user with no linked phone gets the options at once', async () => {
+    const res = await request(appWithRouter(api.client)).post('/touchque/passkey/register/options').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.challenge).toBe('reg-challenge');
+  });
+
+  test('a user with a linked phone approves on the phone first (number matched), then gets the options once', async () => {
+    api.linked.add('user@example.com');
+    const app = appWithRouter(api.client);
+    const first = await request(app).post('/touchque/passkey/register/options').send({});
+    expect(first.status).toBe(202);
+    expect(first.body.touchque).toMatchObject({ state: 'waiting', number: '47' });
+    expect(api.calls.find((c) => c.path === '/login/request')?.body.type).toBe('PASSKEY_ENROLL');
+
+    const waiting = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    expect(waiting.status).toBe(202);
+    api.approve();
+    const done = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    expect(done.status).toBe(200);
+    expect(done.body.challenge).toBe('reg-challenge');
+    const again = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    expect(again.status).not.toBe(200);
+  });
+
+  test('a rejected approval gives no options', async () => {
+    api.linked.add('user@example.com');
+    const app = appWithRouter(api.client);
+    const first = await request(app).post('/touchque/passkey/register/options').send({});
+    api.reject();
+    const res = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    expect(res.status).toBe(403);
+    expect(api.calls.filter((c) => c.path === '/webauthn/register/options' && c.body.approvalRequestId)).toHaveLength(0);
   });
 });

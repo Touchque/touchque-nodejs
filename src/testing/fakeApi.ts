@@ -22,7 +22,7 @@ export interface FakeApi {
   actions: Map<string, { critical: boolean; active: boolean }>;
   calls: Array<{ method: string; path: string; body: any }>;
   /** Behaviour switches */
-  opts: { numberMatch?: boolean; passkeyOnly?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string };
+  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string };
   approve(id?: string, via?: string): void;
   reject(id?: string): void;
   close(): Promise<void>;
@@ -37,7 +37,7 @@ export async function startFakeApi(): Promise<FakeApi> {
     requests: [] as FakeRequest[],
     linked: new Set<string>(),
     pendingSecrets: new Set<string>(),
-    actions: new Map([['LOGIN', { critical: false, active: true }], ['SEND_MONEY', { critical: true, active: true }]]),
+    actions: new Map([['LOGIN', { critical: false, active: true }], ['SEND_MONEY', { critical: true, active: true }], ['PASSKEY_ENROLL', { critical: true, active: true }]]),
     calls: [] as Array<{ method: string; path: string; body: any }>,
     opts: {} as FakeApi['opts'],
     challenges: new Map<string, { user: string; type: string; used: boolean; requestId?: string }>(),
@@ -64,7 +64,10 @@ export async function startFakeApi(): Promise<FakeApi> {
       requiresPasskey: api.opts.passkeyOnly || undefined,
     };
     api.requests.push(r);
-    res.json({ message: 'Request sent', requestId: r.id, challengeCode: r.challengeCode, expiresAt: new Date(Date.now() + 30000).toISOString(), requiresPasskey: r.requiresPasskey });
+    res.json({
+      message: 'Request sent', requestId: r.id, challengeCode: r.challengeCode, expiresAt: new Date(Date.now() + 30000).toISOString(), requiresPasskey: r.requiresPasskey,
+      ...(api.opts.telemetry && { telemetryToken: 'tt_test' }),
+    });
   });
 
   app.get('/login/status/:id', (req, res) => {
@@ -87,6 +90,20 @@ export async function startFakeApi(): Promise<FakeApi> {
       consumed: true, requestId: r.id, externalUsername: r.user, type: r.type, referenceId: r.referenceId, details: r.details,
       confirmedVia: r.confirmedVia, assurance: { phishingResistant: r.confirmedVia === 'WEBAUTHN', method: r.confirmedVia === 'WEBAUTHN' ? 'passkey' : 'push' }, approvalProof: null,
     });
+  });
+
+  // Like the API: a user with a linked phone needs an approved PASSKEY_ENROLL first, used once.
+  const usedEnrollApprovals = new Set<string>();
+  app.post('/webauthn/register/options', (req, res) => {
+    const { externalUsername: user, approvalRequestId } = req.body;
+    if (api.linked.has(user)) {
+      if (!approvalRequestId) return res.status(403).json({ code: 'enrollment_approval_required', error: 'enrollment_approval_required', action: 'PASSKEY_ENROLL' });
+      const r = api.requests.find((x) => x.id === approvalRequestId);
+      if (!r || r.user !== user || r.type !== 'PASSKEY_ENROLL' || r.status !== 'CONFIRMED') return res.status(403).json({ code: 'enrollment_approval_invalid', error: 'enrollment_approval_invalid' });
+      if (usedEnrollApprovals.has(r.id)) return res.status(403).json({ code: 'enrollment_approval_used', error: 'enrollment_approval_used' });
+      usedEnrollApprovals.add(r.id);
+    }
+    res.json({ challenge: 'reg-challenge', rp: { id: 'example.com', name: 'Example' }, user: { name: user } });
   });
 
   app.post('/auth/generate-secret', (req, res) => {

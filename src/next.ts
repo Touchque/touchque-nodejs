@@ -23,9 +23,34 @@ export interface WithTouchQueOptions {
   /** What the phone shows and the approval is bound to. Build it from server-side state. */
   details?: (req: Request) => MaybePromise<LoginRequestDetails | undefined>;
   referenceId?: (req: Request) => MaybePromise<string | undefined>;
-  /** End user's IP (default: first X-Forwarded-For hop, which your platform must set). */
+  /**
+   * End user's IP. Default: none, unless `trustedProxyHops` is set. Use a
+   * preset such as `ipFromVercel` / `ipFromCloudflare`, or your own function
+   * reading a header your platform overwrites. Never the leftmost
+   * X-Forwarded-For hop: a proxy that appends (nginx
+   * `$proxy_add_x_forwarded_for`) leaves it under the client's control.
+   */
   ip?: (req: Request) => string | undefined;
+  /**
+   * How many reverse proxies you run in front of this app. The client is the
+   * X-Forwarded-For entry this many hops from the right (1 = the address
+   * your one proxy saw). Ignored when `ip` is set.
+   */
+  trustedProxyHops?: number;
 }
+
+/** The X-Forwarded-For entry `hops` from the right, or undefined. */
+export function forwardedFor(req: Request, hops: number): string | undefined {
+  if (!Number.isInteger(hops) || hops < 1) return undefined;
+  const parts = (req.headers.get('x-forwarded-for') || '').split(',').map((p) => p.trim()).filter(Boolean);
+  return parts.length >= hops ? parts[parts.length - hops] : undefined;
+}
+
+/** Vercel overwrites `x-real-ip` with the address it accepted the connection from. */
+export const ipFromVercel = (req: Request): string | undefined => req.headers.get('x-real-ip')?.trim() || undefined;
+
+/** Cloudflare sets `cf-connecting-ip`; only use this when the origin accepts Cloudflare traffic only. */
+export const ipFromCloudflare = (req: Request): string | undefined => req.headers.get('cf-connecting-ip')?.trim() || undefined;
 
 export function withTouchQue<Ctx = unknown>(
   action: string,
@@ -39,7 +64,7 @@ export function withTouchQue<Ctx = unknown>(
       options.details ? options.details(req) : undefined,
       options.referenceId ? options.referenceId(req) : undefined,
     ]);
-    const ip = options.ip ? options.ip(req) : req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || undefined;
+    const ip = options.ip ? options.ip(req) : forwardedFor(req, options.trustedProxyHops ?? 0);
     const result = await runGuard(client, {
       user: user ?? undefined,
       action,

@@ -15,6 +15,13 @@ export interface WebAuthnRegisterOptionsRequest {
    * Omit for the classic second-factor credential.
    */
   discoverable?: boolean;
+  /**
+   * Required when the user has a linked phone (API 403
+   * `enrollment_approval_required`): the requestId of a `PASSKEY_ENROLL`
+   * approval the user gave on the phone, at most 10 minutes old, used once.
+   * touchqueRouter's /passkey/register/options runs that approval for you.
+   */
+  approvalRequestId?: string;
 }
 
 /** Passed straight through to navigator.credentials.create() in the browser. */
@@ -107,6 +114,7 @@ export class WebAuthn {
     return this.http.post<WebAuthnRegistrationOptions>('/webauthn/register/options', {
       externalUsername: options.externalUsername,
       ...(options.discoverable ? { discoverable: true } : {}),
+      ...(options.approvalRequestId ? { approvalRequestId: options.approvalRequestId } : {}),
     });
   }
 

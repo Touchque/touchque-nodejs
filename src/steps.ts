@@ -49,6 +49,12 @@ export interface Step {
   reason?: string;
   retryAfter?: number;
   assurance?: ApprovalAssurance;
+  /**
+   * Only when the workspace collects behavioural signals: lets the browser
+   * post them for this request (`@touchque/web` does it when given
+   * `telemetry`). Scoped to this one request, not a credential.
+   */
+  telemetryToken?: string;
 }
 
 export interface StartOptions {
@@ -112,6 +118,7 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
       number: res.challengeCode || undefined,
       expiresAt: res.expiresAt,
       details: details.length ? details : undefined,
+      ...(res.telemetryToken && { telemetryToken: res.telemetryToken }),
     };
   } catch (err) {
     if (!(err instanceof TouchQueAPIError)) throw err;

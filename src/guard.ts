@@ -183,6 +183,23 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
   }
 }
 
+/**
+ * True when this request only polls an approval that is already on its way:
+ * a valid token bound to this user/action/details, still waiting, and no
+ * offline switch or typed code. Such a request can only read the status, never
+ * start a push, so relays do not count it against the per-user push limit
+ * (R1-03: with a 1.5 s poll the 6th poll was refused after 7.5 s).
+ */
+export function isStatusPoll(tq: TouchQue, input: GuardInput): boolean {
+  if (!input.user || !input.token || input.offline || input.code) return false;
+  const claims = verifyGuardToken(guardSecret(tq), input.token);
+  if (!claims || !claims.rid) return false;
+  const details = normalizeDetails(input.details);
+  return claims.u === String(input.user) && claims.a === input.action && claims.d === detailsDigest(details)
+    && claims.r === (input.referenceId ?? null)
+    && (claims.st === 'waiting' || claims.st === 'passkey_required' || claims.st === 'offline');
+}
+
 /** Reads the guard headers from any headers object (Node IncomingHttpHeaders or Fetch Headers). */
 export function guardInputFromHeaders(get: (name: string) => string | undefined | null) {
   const offline = get(GUARD_HEADERS.offline);

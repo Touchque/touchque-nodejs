@@ -44,8 +44,11 @@
 import { Router, Request, Response } from 'express';
 import { TouchQue } from './index';
 import { TouchQueRejectedError, TouchQueTimeoutError, TouchQuePasskeyRequiredError, TouchQueAPIError } from './errors';
-import { runGuard, guardInputFromHeaders } from './guard';
+import { runGuard, guardInputFromHeaders, isStatusPoll } from './guard';
 import type { LoginRequestDetails } from './types';
+
+/** Reserved action: the approval on the phone that unlocks adding a passkey. */
+const PASSKEY_ENROLL_ACTION = 'PASSKEY_ENROLL';
 import { FixedWindowLimiter, RateLimitOptions } from './rateLimiter';
 
 export interface TouchQueRouterOptions {
@@ -191,10 +194,13 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
     return false;
   };
 
+  // A 1.5 s poll for a 2-minute push is 80 requests: one attempt's worth of polls.
+  const POLLS_PER_ATTEMPT = 10;
+
   /** Answers 429 and returns false when this IP or this user is over the limit for `route`. */
-  const allow = (req: Request, res: Response, route: string, user?: string): boolean => {
+  const allow = (req: Request, res: Response, route: string, user?: string, perIp?: number): boolean => {
     if (!limiter) return true;
-    const ipWait = limiter.hit(`ip|${route}|${req.ip || 'unknown'}`, limiter.perIp);
+    const ipWait = limiter.hit(`ip|${route}|${req.ip || 'unknown'}`, perIp ?? limiter.perIp);
     const userWait = user ? limiter.hit(`user|${route}|${user}`, limiter.perUser) : 0;
     const wait = Math.max(ipWait, userWait);
     if (!wait) return true;
@@ -270,12 +276,12 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   // ── Classic push 2FA: login ───────────────────────────────────────────
   router.post('/login', async (req, res) => {
     const externalUsername = await loginUser(req, res, 'externalUsername');
-    if (!externalUsername || !allow(req, res, 'login', externalUsername)) return;
+    if (!externalUsername) return;
     // Same two-phase contract as requireTouchQue: 202 with the step (matching
     // number / first-time QR / offline QR) until approved; the page re-sends
     // with X-TouchQue-Token. `req.ip` is only the real end-user address when
     // this app sets `trust proxy` for its deployment.
-    const result = await runGuard(tq, {
+    const input = {
       user: externalUsername,
       action: actionType,
       // Pre-auth: a typed username proves nothing, so no linking QR unless
@@ -285,7 +291,14 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
       ip: req.ip,
       userAgent: req.get('user-agent'),
       ...guardInputFromHeaders((name) => req.get(name)),
-    });
+    };
+    // Polling an approval already sent is not a new attempt: it has its own,
+    // larger per-IP budget and never uses the user's push budget.
+    const allowed = isStatusPoll(tq, input)
+      ? allow(req, res, 'login-poll', undefined, (limiter?.perIp ?? 0) * POLLS_PER_ATTEMPT)
+      : allow(req, res, 'login', externalUsername);
+    if (!allowed) return;
+    const result = await runGuard(tq, input);
     if (!result.approved) {
       if (result.body.touchque.retryAfter) res.set('Retry-After', String(result.body.touchque.retryAfter));
       res.set('Cache-Control', 'no-store');
@@ -446,11 +459,38 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   });
 
   // ── Passkey: enrollment / management (auth required) ─────────────────
+  // A user with a linked phone approves adding a passkey there first: a
+  // passkey approves requests on its own, so a stolen session of your app
+  // must not be able to add one. Same two-phase contract as /login: 202 with
+  // the step (and number to show) until approved, then the options.
   router.post('/passkey/register/options', async (req, res) => {
     const userId = requireUserId(req, res, getUserId);
     if (!userId) return;
+    const input = {
+      user: userId, action: PASSKEY_ENROLL_ACTION, enroll: false, ip: req.ip, userAgent: req.get('user-agent'),
+      ...guardInputFromHeaders((name) => req.get(name)),
+    };
     try {
-      res.json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true }));
+      if (!input.token) {
+        try {
+          res.json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true }));
+          return;
+        } catch (error) {
+          if (!(error instanceof TouchQueAPIError && error.status === 403 && error.code === 'enrollment_approval_required')) throw error;
+        }
+      }
+      const allowed = isStatusPoll(tq, input)
+        ? allow(req, res, 'login-poll', undefined, (limiter?.perIp ?? 0) * POLLS_PER_ATTEMPT)
+        : allow(req, res, 'passkey-enroll', userId);
+      if (!allowed) return;
+      const result = await runGuard(tq, input);
+      if (!result.approved) {
+        if (result.body.touchque.retryAfter) res.set('Retry-After', String(result.body.touchque.retryAfter));
+        res.set('Cache-Control', 'no-store');
+        res.status(result.status).json(result.body);
+        return;
+      }
+      res.json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true, approvalRequestId: result.approved.requestId }));
     } catch (error) {
       sendRelayError(res, error);
     }

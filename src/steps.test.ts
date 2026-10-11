@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { TouchQue, withTouchQue, TouchQueConfigError, TouchQueError } from './index';
+import { TouchQue, withTouchQue, ipFromVercel, TouchQueConfigError, TouchQueError } from './index';
 import { startFakeApi, FakeApi } from './testing/fakeApi';
 
 let api: FakeApi;
@@ -71,6 +71,14 @@ describe('start / check / complete', () => {
   });
 });
 
+describe('behavioural telemetry (R1-04)', () => {
+  test('the waiting step carries the telemetry token, only when the workspace issues one', async () => {
+    expect((await api.client.start('LOGIN', { user: 'jane@acme.com' })).telemetryToken).toBeUndefined();
+    api.opts.telemetry = true;
+    expect((await api.client.start('LOGIN', { user: 'jane@acme.com' })).telemetryToken).toBe('tt_test');
+  });
+});
+
 describe('withTouchQue (Next.js / Fetch API)', () => {
   const call = (h: ReturnType<typeof withTouchQue>, headers: Record<string, string> = {}) =>
     h(new Request('http://app.test/api/transfer', { method: 'POST', headers: { 'x-user': 'jane@acme.com', ...headers }, body: JSON.stringify({ amount: 5 }) }));
@@ -89,5 +97,22 @@ describe('withTouchQue (Next.js / Fetch API)', () => {
     const done = await call(h, { 'x-touchque-token': body.token });
     expect(done.status).toBe(200);
     expect(await done.json()).toEqual({ ok: true, via: 'push' });
+  });
+
+  // R1-02: behind an appending proxy the leftmost hop is whatever the client sent.
+  test('never sends the client-controlled leftmost X-Forwarded-For hop', async () => {
+    const sent = async (opts: Partial<Parameters<typeof withTouchQue>[2]>) => {
+      api.calls.length = 0;
+      const h = withTouchQue('SEND_MONEY', async () => Response.json({ ok: true }), {
+        client: api.client, user: (req) => req.headers.get('x-user'), ...opts,
+      });
+      await call(h, { 'x-forwarded-for': '1.2.3.4, 203.0.113.9', 'x-real-ip': '198.51.100.4' });
+      return api.calls.find((c) => c.path === '/login/request')?.body.clientIp;
+    };
+    expect(await sent({})).toBeUndefined();
+    expect(await sent({ trustedProxyHops: 1 })).toBe('203.0.113.9');
+    expect(await sent({ trustedProxyHops: 2 })).toBe('1.2.3.4');
+    expect(await sent({ trustedProxyHops: 3 })).toBeUndefined();
+    expect(await sent({ ip: ipFromVercel })).toBe('198.51.100.4');
   });
 });
