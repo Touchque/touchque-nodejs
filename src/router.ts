@@ -278,6 +278,9 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
     const result = await runGuard(tq, {
       user: externalUsername,
       action: actionType,
+      // Pre-auth: a typed username proves nothing, so no linking QR unless
+      // getLoginUser ties this route to the password step.
+      enroll: Boolean(getLoginUser),
       details: getDetails ? await getDetails(req) : undefined,
       ip: req.ip,
       userAgent: req.get('user-agent'),

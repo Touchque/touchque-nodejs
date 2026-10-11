@@ -34,6 +34,13 @@ const TOKEN_TTL_MS = 10 * 60 * 1000;
 export interface GuardInput {
   /** The user in YOUR system; undefined = not signed in → 401. */
   user?: string;
+  /**
+   * Issue a first-time linking QR (and recovery codes) when the user has no
+   * phone yet (default true). Pass false whenever `user` is not proven by your
+   * own sign-in, e.g. a typed username before the password step: the QR would
+   * let anyone link their own phone to that account.
+   */
+  enroll?: boolean;
   action: string;
   details?: LoginRequestDetails;
   referenceId?: string;
@@ -162,6 +169,7 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
     // Anything else (no/foreign token, enrollment finished, new attempt): start.
     return issue(await start(r, action, {
       user, details: details.length ? details : undefined, referenceId: input.referenceId, ip: input.ip, userAgent: input.userAgent,
+      enroll: input.enroll,
     }));
   } catch (err) {
     if (err instanceof TouchQueConfigError) {

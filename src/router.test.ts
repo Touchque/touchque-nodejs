@@ -110,6 +110,21 @@ describe('touchqueRouter — classic login (two-phase)', () => {
   afterEach(async () => { await api.close(); });
   const realApp = (opts: Record<string, unknown> = {}) => appWithRouter(api.client, { rateLimit: false, ...opts });
 
+  test('pre-auth POST /login never hands an unlinked user a linking QR or recovery codes', async () => {
+    const res = await request(realApp()).post('/touchque/login').send({ externalUsername: 'new@example.com' });
+    expect(res.status).toBe(202);
+    expect(res.body.touchque.state).toBe('enroll');
+    expect(res.body.touchque.enroll).toBeUndefined();
+    expect(api.calls.some((c) => c.path === '/auth/generate-secret')).toBe(false);
+  });
+
+  test('POST /login behind the password step (getLoginUser) still offers first-time linking', async () => {
+    const res = await request(realApp({ getLoginUser: () => 'new@example.com' })).post('/touchque/login').send({});
+    expect(res.status).toBe(202);
+    expect(res.body.touchque.state).toBe('enroll');
+    expect(res.body.touchque.enroll.qrCodeDataUrl).toBeTruthy();
+  });
+
   test('POST /login 400s without externalUsername', async () => {
     const res = await request(realApp()).post('/touchque/login').send({});
     expect(res.status).toBe(400);
