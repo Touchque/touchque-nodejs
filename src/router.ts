@@ -44,7 +44,7 @@
 import { Router, Request, Response } from 'express';
 import { TouchQue } from './index';
 import { TouchQueRejectedError, TouchQueTimeoutError, TouchQuePasskeyRequiredError, TouchQueAPIError } from './errors';
-import { runGuard, guardInputFromHeaders, isStatusPoll } from './guard';
+import { runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, SilentSignInOptions } from './guard';
 import type { LoginRequestDetails } from './types';
 
 /** Reserved action: the approval on the phone that unlocks adding a passkey. */
@@ -89,6 +89,20 @@ export interface TouchQueRouterOptions {
   /** LoginType passed to the classic-2FA POST /login route. Default: 'LOGIN'. */
   actionType?: string;
 
+  /**
+   * Silent sign-ins for POST /login (default off). When on, a new sign-in
+   * whose browser sent its device-bound key proof (`X-TouchQue-Browser`,
+   * added by `@touchque/web` with `browserKey: true`) first asks TouchQue
+   * whether anything about it is new. If nothing is, it succeeds at once with
+   * no push (`onAuthenticated` gets `via: 'silent'`; the answer's
+   * `assurance.method` is `'silent'`). Otherwise, and on any error, the usual
+   * push starts and its approval makes the browser known. Set `getLoginUser`
+   * too: the user must have passed your password step. `{ maxAgeSeconds }`
+   * sets your own limit on how long ago the last phone approval in that
+   * browser may be.
+   */
+  silentSignIn?: boolean | SilentSignInOptions;
+
   /** @deprecated no effect — POST /login no longer holds the request open; the page polls with the token. */
   loginTimeout?: number;
 
@@ -111,7 +125,7 @@ export interface TouchQueRouterOptions {
   onAuthenticated?: (
     req: Request,
     res: Response,
-    info: { externalUsername: string; requestId?: string; via: 'login' | 'passkey' | 'offline' | 'offline-totp' }
+    info: { externalUsername: string; requestId?: string; via: 'login' | 'passkey' | 'offline' | 'offline-totp' | 'silent' }
   ) => void | Promise<void>;
 }
 
@@ -291,6 +305,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
       ip: req.ip,
       userAgent: req.get('user-agent'),
       ...guardInputFromHeaders((name) => req.get(name)),
+      ...silentInputFromHeaders(options.silentSignIn, (name) => req.get(name)),
     };
     // Polling an approval already sent is not a new attempt: it has its own,
     // larger per-IP budget and never uses the user's push budget.
@@ -307,7 +322,9 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
     }
     try {
       if (onAuthenticated) {
-        const via = result.approved.confirmedVia === 'OFFLINE_TOTP' ? 'offline-totp' : result.approved.confirmedVia === 'OFFLINE_CODE' ? 'offline' : 'login';
+        const via = result.approved.confirmedVia === 'OFFLINE_TOTP' ? 'offline-totp'
+          : result.approved.confirmedVia === 'OFFLINE_CODE' ? 'offline'
+            : result.approved.confirmedVia === 'SILENT' ? 'silent' : 'login';
         await onAuthenticated(req, res, { externalUsername, requestId: result.approved.requestId, via });
       }
       res.json({ status: 'success', requestId: result.approved.requestId, assurance: result.approved.assurance });

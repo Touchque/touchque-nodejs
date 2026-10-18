@@ -3,6 +3,27 @@
 All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.5.0] — 2026-10-18 — Silent sign-ins
+
+### Added
+- **Silent sign-ins.** Stop asking the phone again and again when nothing about a sign-in is new. TouchQue's
+  risk engine decides; the push is skipped only when it says so.
+  - `tq.risk.check({ externalUsername, type?, clientIp?, userAgent?, browserProof?, maxAgeSeconds? })` →
+    `{ prompt, reasons, assurance, silentMode }` (`RiskCheckOptions`, `RiskCheckResult`, `RiskReason`). Sends
+    nothing to the phone. Read fail-closed: `prompt` is `false` only when the API answered the boolean `false`;
+    malformed `reasons` become `[]`, a missing `assurance` is `'normal'` (`parseRiskCheck`).
+  - `tq.risk.browsers({ externalUsername })` and `tq.risk.forgetBrowsers({ externalUsername, thumbprint? })`: the
+    browsers TouchQue knows for a user, and forgetting one or all of them.
+  - `login.request({ …, browserProof })` and `tq.start(action, { …, browserProof })`: the browser's device-bound key
+    proof (`X-TouchQue-Browser`, made by `@touchque/web` 1.4.0), passed through untouched; once the request is
+    approved, TouchQue knows that browser.
+  - `silentSignIn` option (default off) on `requireTouchQue`, `withTouchQue`, `touchqueRouter` (POST /login) and
+    `runGuard`: a new attempt carrying the `X-TouchQue-Browser` header is checked first; `prompt: false` approves
+    it at once with no push (`assurance.method: 'silent'`, `confirmedVia: 'SILENT'`, `requestId: 'silent'`,
+    `reasons`; `onAuthenticated` gets `via: 'silent'`). Otherwise, and on any error in the check, the usual push
+    starts with the proof attached. `{ maxAgeSeconds }` sets your own limit on the age of the last phone approval.
+  - `GUARD_HEADERS.browser` (`x-touchque-browser`), `SilentSignInOptions`.
+
 ## [3.4.0] — 2026-10-18
 
 ### Added

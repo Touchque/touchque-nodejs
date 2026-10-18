@@ -207,6 +207,60 @@ sign-in and sends a beacon to it, so a real-time phishing proxy in front of your
 approval is refused (`reason: 'phishing_origin'`) and the phone warns the user. Allow the canary host in your
 Content-Security-Policy (`img-src` and `connect-src`).
 
+## Silent sign-ins (stop asking when nothing is new)
+
+A user who approved on their phone in this browser a little while ago, from the same phone, network and country,
+with no risk signal since, does not need another push. TouchQue's risk engine decides; your server only skips the
+push when it says so.
+
+1. In the browser, `@touchque/web` 1.4.0 with `createTouchQueWeb({ browserKey: true })` keeps a non-extractable
+   key for your site and sends a fresh, signed proof of it in the `X-TouchQue-Browser` header.
+2. On the server, turn on `silentSignIn`:
+
+```typescript
+app.post('/login/2fa',
+  requireTouchQue('LOGIN', { user: (req) => req.session.passwordOkUser, silentSignIn: true }),
+  (req, res) => {
+    // req.touchque.assurance.method is 'silent' when no push was needed.
+    res.json({ ok: true });
+  });
+
+app.use('/touchque', touchqueRouter(tq, {
+  getUserId: (req) => req.session.user?.email,
+  getLoginUser: (req) => req.session.passwordOkUser,
+  silentSignIn: true, // or { maxAgeSeconds: 8 * 3600 } for your own limit
+}));
+```
+
+`withTouchQue` takes the same option. With it on, a new attempt that carries the header first calls
+`tq.risk.check`. Only an answer of exactly `prompt: false` approves it at once, with nothing sent to the phone:
+the approval has `assurance: { method: 'silent', phishingResistant: false }`, `confirmedVia: 'SILENT'`,
+`requestId: 'silent'` and `reasons` (`known_browser`, `recent_approval`, `same_phone`, `familiar_network`,
+`no_risk_signal`); `touchqueRouter` calls `onAuthenticated` with `via: 'silent'`. Anything else, and any error in the
+check, starts the usual push with the proof attached, so its approval makes the browser known. Polling with the
+token never checks again.
+
+TouchQue only lets a sign-in through silently when all of this holds: the browser proved its key and was approved
+on the phone (a confirmed push, not one approved during a call, or a passkey) within your `maxAgeSeconds` and at most
+7 days ago, by the phone that is linked now; the country and the network were seen in the user's earlier approved
+sign-ins; the risk engine allows it with no risk signal; and the action is an everyday one. A critical action always
+asks. In `shadow` mode (`silentMode`) it always asks and the reasons say what would have happened.
+
+Without the adapters:
+
+```typescript
+const browserProof = req.get('x-touchque-browser');
+const risk = await tq.risk.check({ externalUsername: user, type: 'LOGIN', clientIp: req.ip, browserProof });
+if (risk.prompt === false) return openSession(user); // risk.reasons say why
+const step = await tq.start('LOGIN', { user, ip: req.ip, browserProof }); // the approval makes the browser known
+
+const { browsers } = await tq.risk.browsers({ externalUsername: user });      // for an "approved browsers" list
+await tq.risk.forgetBrowsers({ externalUsername: user });                    // all; or { thumbprint } for one
+```
+
+Forget a user's browsers after a password reset or a "sign out everywhere". `risk.check` reads the answer fail-closed:
+`prompt` is `false` only when TouchQue answered the boolean `false`.
+
 ## Verifying the device proof (no need to trust TouchQue)
 
 When the phone holds a hardware key, every approval carries `approvalProof`: the

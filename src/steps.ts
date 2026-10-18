@@ -12,7 +12,7 @@ import type { HttpClient } from './core/HttpClient';
 import type { Auth } from './resources/Auth';
 import type { Login } from './resources/Login';
 import type { Offline } from './resources/Offline';
-import type { ApprovalAssurance, LoginRequestDetails } from './types';
+import type { ApprovalAssurance, LoginRequestDetails, RiskReason } from './types';
 import { TouchQueAPIError, TouchQueConfigError, TouchQueError } from './errors';
 import { detailsDigest } from './approvalProof';
 
@@ -75,6 +75,11 @@ export interface StartOptions {
   userAgent?: string;
   /** Show an enrollment QR when the user has not linked a phone yet (default true). */
   enroll?: boolean;
+  /**
+   * Silent sign-ins: the browser's device-bound key proof (`X-TouchQue-Browser`),
+   * passed through untouched. Once the user approves, TouchQue knows this browser.
+   */
+  browserProof?: string;
 }
 
 export interface Approval {
@@ -97,6 +102,11 @@ export interface Approval {
   revoked?: boolean;
   revokeReason?: 'UNDO' | 'COACHED' | null;
   reconfirmedAt?: string | null;
+  /**
+   * Silent sign-ins only (`assurance.method === 'silent'`, `confirmedVia: 'SILENT'`):
+   * nothing was sent to the phone; why TouchQue let this known browser in.
+   */
+  reasons?: RiskReason[];
 }
 
 type Resources = { http: HttpClient; auth: Auth; login: Login; offline: Offline };
@@ -125,6 +135,7 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
       clientIp: opts.ip,
       userAgent: opts.userAgent,
       details: details.length ? details : undefined,
+      browserProof: opts.browserProof,
     });
     const canary = res.canary && typeof res.canary.url === 'string' ? { canary: { url: res.canary.url } } : {};
     if (res.requiresPasskey) {

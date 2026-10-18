@@ -52,6 +52,14 @@ export class Login {
    *   userAgent: req.get('user-agent'),
    *   details: { Amount: '1,250.00 USD', Recipient: 'Jane Doe' },
    * });
+   *
+   * @example
+   * // Silent sign-ins: once approved, this browser is known (see `risk.check`)
+   * const response = await tq.login.request({
+   *   externalUsername: 'user@company.com',
+   *   type: 'LOGIN',
+   *   browserProof: req.get('x-touchque-browser'),
+   * });
    */
   async request(options: LoginRequestOptions): Promise<LoginRequestResponse> {
     return this.http.post<LoginRequestResponse>('/login/request', {
@@ -63,6 +71,7 @@ export class Login {
       ...(options.details && { details: options.details }),
       ...(options.requireBiometric && { requireBiometric: options.requireBiometric }),
       ...(options.requireNumberMatch && { requireNumberMatch: options.requireNumberMatch }),
+      ...(options.browserProof && { browserProof: options.browserProof }),
     });
   }
 

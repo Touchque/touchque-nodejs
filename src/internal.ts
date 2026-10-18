@@ -6,10 +6,11 @@ import type { HttpClient } from './core/HttpClient';
 import type { Auth } from './resources/Auth';
 import type { Login } from './resources/Login';
 import type { Offline } from './resources/Offline';
+import type { Risk } from './resources/Risk';
 
 interface Internals {
   apiSecret: string;
-  resources: { http: HttpClient; auth: Auth; login: Login; offline: Offline };
+  resources: { http: HttpClient; auth: Auth; login: Login; offline: Offline; risk: Risk };
 }
 
 const store = new WeakMap<object, Internals>();

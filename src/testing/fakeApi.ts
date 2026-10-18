@@ -3,6 +3,7 @@
 // endpoints the step-up flow uses. Tests drive the "phone" with approve()/reject().
 
 import express from 'express';
+import * as crypto from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { TouchQue } from '../index';
@@ -13,6 +14,13 @@ export interface FakeRequest {
   status: 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'EXPIRED';
   challengeCode?: string; requiresPasskey?: boolean; consumed: boolean; confirmedVia?: string;
   provisional?: boolean; reconfirmedAt?: string; revokedAt?: string; revokeReason?: 'UNDO' | 'COACHED';
+  browserProof?: string;
+}
+
+/** A browser made known by an approved request that carried `browserProof`. */
+export interface FakeBrowser {
+  user: string; thumbprint: string; label: string; createdAt: string;
+  lastMfaAt: string; lastMfaMethod: string; lastSeenAt: string; lastSilentAt: string | null;
 }
 
 export interface FakeApi {
@@ -22,8 +30,15 @@ export interface FakeApi {
   pendingSecrets: Set<string>;
   actions: Map<string, { critical: boolean; active: boolean }>;
   calls: Array<{ method: string; path: string; body: any }>;
-  /** Behaviour switches */
-  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string };
+  /** Silent sign-ins: browsers made known by approvals (GET /risk/browsers). */
+  browsers: FakeBrowser[];
+  /** The body of the last POST /risk/check, or null. */
+  lastCheck: any;
+  /**
+   * Behaviour switches. `silent`: POST /risk/check answers prompt:false for an
+   * everyday action (a critical one still asks, as does an unlinked user).
+   */
+  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; silent?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string };
   approve(id?: string, via?: string, extra?: { provisional?: boolean }): void;
   reject(id?: string): void;
   /** Vishing Shield: the phone tap moved the request to a passkey (still PENDING). */
@@ -34,6 +49,34 @@ export interface FakeApi {
 }
 
 const toPairs = (d: any) => (!d ? null : Array.isArray(d) ? d : Object.entries(d).map(([label, value]) => ({ label, value: String(value) })));
+const b64u = (buf: Buffer) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+// RFC 7638 thumbprint of the proof's key, like the API (object or base64url JSON
+// string). The fake does not check the signature; an unreadable proof gets a
+// stable stand-in so tests can still tell browsers apart.
+function browserThumbprint(proof: unknown): string {
+  try {
+    const p = typeof proof === 'string' ? JSON.parse(Buffer.from(proof, 'base64url').toString('utf8')) : proof;
+    const { crv, kty, x, y } = (p as { jwk: Record<string, unknown> }).jwk;
+    if (typeof x !== 'string' || typeof y !== 'string') throw new Error('no key');
+    return b64u(crypto.createHash('sha256').update(JSON.stringify({ crv, kty, x, y })).digest());
+  } catch {
+    return b64u(crypto.createHash('sha256').update(typeof proof === 'string' ? proof : JSON.stringify(proof)).digest());
+  }
+}
+// The engine's English texts for the reason codes the fake answers with.
+const REASON_TEXT: Record<string, string> = {
+  known_browser: 'This browser proved its device-bound key',
+  recent_approval: 'Approved on the phone in this browser 3 h ago',
+  same_phone: 'The same phone approved this browser',
+  familiar_network: 'Country and network seen in earlier approved sign-ins',
+  no_risk_signal: 'No risk signal',
+  no_browser_key: 'No device-bound browser key was presented',
+  new_browser: 'This browser has not been approved on the phone for this account',
+  critical_action: 'The action is critical',
+  phone_not_linked: 'No phone is linked to this account',
+};
+const reasons = (...codes: string[]) => codes.map((code) => ({ code, text: REASON_TEXT[code] }));
 
 export async function startFakeApi(): Promise<FakeApi> {
   const app = express();
@@ -46,6 +89,18 @@ export async function startFakeApi(): Promise<FakeApi> {
     calls: [] as Array<{ method: string; path: string; body: any }>,
     opts: {} as FakeApi['opts'],
     challenges: new Map<string, { user: string; type: string; used: boolean; requestId?: string }>(),
+    browsers: [] as FakeBrowser[],
+    lastCheck: null as any,
+  };
+  // Like the API: only a real second factor makes a browser known (a confirmed push that is not provisional, a passkey).
+  const rememberBrowser = (r: FakeRequest) => {
+    if (!r.browserProof || r.status !== 'CONFIRMED' || r.provisional) return;
+    const thumbprint = browserThumbprint(r.browserProof);
+    const now = new Date().toISOString();
+    const lastMfaMethod = r.confirmedVia === 'WEBAUTHN' ? 'passkey' : 'push';
+    const known = api.browsers.find((x) => x.user === r.user && x.thumbprint === thumbprint);
+    if (known) Object.assign(known, { lastMfaAt: now, lastMfaMethod, lastSeenAt: now });
+    else api.browsers.push({ user: r.user, thumbprint, label: 'Browser', createdAt: now, lastMfaAt: now, lastMfaMethod, lastSeenAt: now, lastSilentAt: null });
   };
   let seq = 0;
   app.use((req, res, next) => {
@@ -70,6 +125,7 @@ export async function startFakeApi(): Promise<FakeApi> {
       status: 'PENDING', consumed: false,
       challengeCode: api.opts.passkeyOnly ? undefined : (api.opts.numberMatch || action.critical ? '47' : undefined),
       requiresPasskey: api.opts.passkeyOnly || undefined,
+      browserProof: req.body.browserProof || undefined,
     };
     api.requests.push(r);
     res.json({
@@ -105,6 +161,37 @@ export async function startFakeApi(): Promise<FakeApi> {
       confirmedVia: r.confirmedVia, assurance: { phishingResistant: r.confirmedVia === 'WEBAUTHN', method: r.confirmedVia === 'WEBAUTHN' ? 'passkey' : 'push' }, approvalProof: null,
       ...shieldFields(r),
     });
+  });
+
+  // Silent sign-ins. Sends nothing to the phone; never 404 for an unknown user (that would reveal who has 2FA).
+  app.post('/risk/check', (req, res) => {
+    const b = req.body || {};
+    api.lastCheck = b;
+    if (typeof b.externalUsername !== 'string' || !b.externalUsername) return res.status(400).json({ code: 'invalid_request', error: 'externalUsername is required' });
+    if (api.opts.rateLimited) return res.status(429).json({ code: 'rate_limited', error: 'too_many_login_requests', retryAfter: 60 });
+    const ask = (assurance: string, ...codes: string[]) => res.json({ prompt: true, reasons: reasons(...codes), assurance, silentMode: 'enforce' });
+    if (!api.linked.has(b.externalUsername)) return ask('normal', 'phone_not_linked');
+    if (api.actions.get(b.type || 'LOGIN')?.critical) return ask('normal', 'critical_action');
+    if (api.opts.silent) {
+      return res.json({
+        prompt: false, reasons: reasons('known_browser', 'recent_approval', 'same_phone', 'familiar_network', 'no_risk_signal'), assurance: 'high', silentMode: 'enforce',
+      });
+    }
+    return ask('normal', b.browserProof ? 'new_browser' : 'no_browser_key');
+  });
+  const browserView = ({ user, ...rest }: FakeBrowser) => rest;
+  app.get('/risk/browsers', (req, res) => {
+    const user = typeof req.query.externalUsername === 'string' ? req.query.externalUsername : '';
+    if (!user) return res.status(400).json({ code: 'invalid_request', error: 'externalUsername is required' });
+    res.json({ browsers: api.browsers.filter((x) => x.user === user).map(browserView) });
+  });
+  app.post('/risk/browsers/forget', (req, res) => {
+    const b = req.body || {};
+    if (typeof b.externalUsername !== 'string' || !b.externalUsername) return res.status(400).json({ code: 'invalid_request', error: 'externalUsername is required' });
+    const gone = (x: FakeBrowser) => x.user === b.externalUsername && (!b.thumbprint || x.thumbprint === b.thumbprint);
+    const forgotten = api.browsers.filter(gone).length;
+    api.browsers = api.browsers.filter((x) => !gone(x));
+    res.json({ forgotten });
   });
 
   // Like the API: a user with a linked phone needs an approved PASSKEY_ENROLL first, used once.
@@ -175,7 +262,10 @@ export async function startFakeApi(): Promise<FakeApi> {
 
   return Object.assign(api, {
     client,
-    approve(id?: string, via = 'DEVICE', extra: { provisional?: boolean } = {}) { const r = pick(id); r.status = 'CONFIRMED'; r.confirmedVia = via; r.provisional = Boolean(extra.provisional); },
+    approve(id?: string, via = 'DEVICE', extra: { provisional?: boolean } = {}) {
+      const r = pick(id); r.status = 'CONFIRMED'; r.confirmedVia = via; r.provisional = Boolean(extra.provisional);
+      rememberBrowser(r);
+    },
     reject(id?: string) { pick(id).status = 'REJECTED'; },
     escalate(id?: string) { const r = pick(id); r.requiresPasskey = true; r.challengeCode = undefined; },
     revoke(id?: string, reason: 'UNDO' | 'COACHED' = 'COACHED') { const r = pick(id); r.revokedAt = new Date().toISOString(); r.revokeReason = reason; },

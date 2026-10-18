@@ -220,6 +220,15 @@ export interface LoginRequestOptions {
    * The backend also auto-enables this if MFA fatigue is detected (2+ failed requests in 10 min).
    */
   requireNumberMatch?: boolean;
+  /**
+   * Silent sign-ins: the browser's device-bound key proof, exactly as the
+   * browser sent it (`X-TouchQue-Browser` header, made by `@touchque/web`).
+   * When the user approves this request on the phone (or with a passkey),
+   * TouchQue remembers the browser, so a later `risk.check` can let the same
+   * browser in without asking. Pass it through untouched; an invalid proof
+   * only means "a browser TouchQue does not know".
+   */
+  browserProof?: string;
 }
 
 export interface LoginRequestResponse {
@@ -305,6 +314,93 @@ export interface WaitForApprovalOptions {
 export interface WaitForApprovalResult {
   approved: boolean;
   status: LoginStatus;
+}
+
+// ─── Risk Resource (silent sign-ins) ─────────────────────────────
+
+export interface RiskCheckOptions {
+  /** User identifier in YOUR system */
+  externalUsername: string;
+  /** The action the user is about to do (default `'LOGIN'`). A critical action always asks. */
+  type?: LoginType;
+  /** End user's IP address: compared with the networks of the user's earlier approved sign-ins. */
+  clientIp?: string;
+  userAgent?: string;
+  /** The browser's device-bound key proof (`X-TouchQue-Browser`), passed through untouched. */
+  browserProof?: string;
+  /**
+   * Your own limit on how long ago the last phone approval in this browser
+   * may be, in seconds (integer, 0 = always ask). TouchQue never goes beyond
+   * its own limit (7 days).
+   */
+  maxAgeSeconds?: number;
+}
+
+/** One reason behind a `risk.check` answer. Show `text` or translate `code`. */
+export interface RiskReason {
+  /**
+   * Why it was silent: `known_browser`, `recent_approval`, `same_phone`,
+   * `familiar_network`, `no_risk_signal`. Why it asks: `no_browser_key`,
+   * `new_browser`, `approval_too_old`, `policy_every_sign_in`, `other_phone`,
+   * `new_country`, `new_network`, `network_unknown`, `hosting_network`,
+   * `critical_action`, `sensitive_action`, `risk_signal`, `push_fatigue`,
+   * `fraud_report`, `new_factor`, `vishing_shield`, `checks_incomplete`,
+   * `silent_mode_shadow`, `phone_not_linked`, `frozen`, … New codes are added
+   * in minor versions.
+   */
+  code: string;
+  /** English text. */
+  text: string;
+}
+
+export interface RiskCheckResult {
+  /**
+   * `false` only when TouchQue answered exactly `prompt: false`: nothing
+   * about this sign-in is new, let the user in without a push. Anything else
+   * (including an unreadable answer) is `true`: ask on the phone as usual.
+   */
+  prompt: boolean;
+  reasons: RiskReason[];
+  /** How sure TouchQue is that this is the user (default `'normal'`). */
+  assurance: 'high' | 'normal' | 'low';
+  /**
+   * `'shadow'`: silent sign-ins are only measured for this workspace, so
+   * `prompt` is always true and the reasons say what would have happened.
+   */
+  silentMode: 'enforce' | 'shadow';
+}
+
+export interface RiskBrowsersOptions {
+  externalUsername: string;
+}
+
+/** A browser TouchQue knows for a user: one the user approved on the phone (or with a passkey). */
+export interface RiskBrowser {
+  /** RFC 7638 thumbprint of the browser's key: pass it to `forgetBrowsers` to forget this one. */
+  thumbprint: string;
+  label: string | null;
+  createdAt: string;
+  /** Last phone or passkey approval in this browser. */
+  lastMfaAt: string | null;
+  /** How that approval was given, e.g. `'push'` or `'passkey'`. */
+  lastMfaMethod: string | null;
+  lastSeenAt: string | null;
+  /** Last sign-in TouchQue let through without asking. */
+  lastSilentAt: string | null;
+}
+
+export interface RiskBrowsersResponse {
+  browsers: RiskBrowser[];
+}
+
+export interface ForgetBrowsersOptions {
+  externalUsername: string;
+  /** One browser; leave out to forget every browser of the user (e.g. after a password reset). */
+  thumbprint?: string;
+}
+
+export interface ForgetBrowsersResponse {
+  forgotten: number;
 }
 
 // ─── Webhook Resource ────────────────────────────────────────────

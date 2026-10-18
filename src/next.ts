@@ -12,7 +12,7 @@
 import { TouchQue, getDefaultClient } from './index';
 import type { LoginRequestDetails } from './types';
 import type { Approval } from './steps';
-import { runGuard, guardInputFromHeaders } from './guard';
+import { runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions } from './guard';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -37,6 +37,17 @@ export interface WithTouchQueOptions {
    * your one proxy saw). Ignored when `ip` is set.
    */
   trustedProxyHops?: number;
+  /**
+   * Silent sign-ins (default off). When on, a new attempt whose browser sent
+   * its device-bound key proof (`X-TouchQue-Browser`, added by `@touchque/web`
+   * with `browserKey: true`) first asks TouchQue whether anything about it is
+   * new. If nothing is, your handler runs at once with no push
+   * (`ctx.touchque.assurance.method === 'silent'`, `ctx.touchque.reasons`). Otherwise,
+   * and on any error, the usual push starts and its approval makes the
+   * browser known. `{ maxAgeSeconds }` sets your own limit on how long ago the
+   * last phone approval in that browser may be.
+   */
+  silentSignIn?: boolean | SilentSignInOptions;
 }
 
 /** The X-Forwarded-For entry `hops` from the right, or undefined. */
@@ -73,6 +84,7 @@ export function withTouchQue<Ctx = unknown>(
       ip,
       userAgent: req.headers.get('user-agent') ?? undefined,
       ...guardInputFromHeaders((name) => req.headers.get(name)),
+      ...silentInputFromHeaders(options.silentSignIn, (name) => req.headers.get(name)),
     });
     if (result.approved) {
       return handler(req, { ...(ctx as Ctx), touchque: result.approved });

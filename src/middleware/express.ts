@@ -13,7 +13,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { TouchQue, getDefaultClient } from '../index';
 import type { LoginRequestDetails } from '../types';
-import { runGuard, guardInputFromHeaders } from '../guard';
+import { runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions } from '../guard';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -38,6 +38,17 @@ export interface TouchQueMiddlewareOptions {
   getReferenceId?: (req: Request) => string | undefined;
   /** @deprecated no effect — the page polls instead of the server holding the request open */
   timeout?: number;
+  /**
+   * Silent sign-ins (default off). When on, a new attempt whose browser sent
+   * its device-bound key proof (`X-TouchQue-Browser`, added by `@touchque/web`
+   * with `browserKey: true`) first asks TouchQue whether anything about it is
+   * new. If nothing is, your handler runs at once with no push
+   * (`touchque.assurance.method === 'silent'`, `touchque.reasons`). Otherwise,
+   * and on any error, the usual push starts and its approval makes the
+   * browser known. `{ maxAgeSeconds }` sets your own limit on how long ago the
+   * last phone approval in that browser may be.
+   */
+  silentSignIn?: boolean | SilentSignInOptions;
 }
 
 const defaultUser = (req: Request): string | undefined => {
@@ -76,6 +87,7 @@ export function requireTouchQue(
       const [user, details, referenceId] = await Promise.all([
         userOf(req), detailsOf ? detailsOf(req) : undefined, refOf ? refOf(req) : undefined,
       ]);
+      const header = (name: string) => req.get?.(name) ?? (req.headers?.[name] as string | undefined);
       const result = await runGuard(client, {
         user: user ?? undefined,
         action,
@@ -83,7 +95,8 @@ export function requireTouchQue(
         referenceId: referenceId ?? undefined,
         ip: req.ip,
         userAgent: req.get?.('user-agent') ?? undefined,
-        ...guardInputFromHeaders((name) => req.get?.(name) ?? (req.headers?.[name] as string | undefined)),
+        ...guardInputFromHeaders(header),
+        ...silentInputFromHeaders(options.silentSignIn, header),
       });
       if (result.approved) {
         (req as unknown as { touchque: unknown }).touchque = result.approved;

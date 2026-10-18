@@ -11,6 +11,8 @@
 //   X-TouchQue-Offline: 1  switch to offline approval (phone has no internet)
 //   X-TouchQue-Code        the code from the phone (offline QR code, or with
 //   X-TouchQue-Code-Type: totp  the rolling time-based code)
+//   X-TouchQue-Browser     the browser's device-bound key proof (silent sign-ins,
+//                          read only when the adapter's `silentSignIn` is on)
 
 import type { TouchQue } from './index';
 import type { LoginRequestDetails } from './types';
@@ -27,9 +29,18 @@ export const GUARD_HEADERS = {
   offline: 'x-touchque-offline',
   code: 'x-touchque-code',
   codeType: 'x-touchque-code-type',
+  browser: 'x-touchque-browser',
 } as const;
 
 const TOKEN_TTL_MS = 10 * 60 * 1000;
+/** A real proof is a few hundred characters; anything far larger is not one. */
+const MAX_BROWSER_PROOF = 4096;
+
+/** `silentSignIn: { maxAgeSeconds }`: your own limit on the age of the last phone approval in the browser. */
+export interface SilentSignInOptions {
+  /** Seconds (integer); 0 = always ask. TouchQue never goes beyond its own limit (7 days). */
+  maxAgeSeconds?: number;
+}
 
 export interface GuardInput {
   /** The user in YOUR system; undefined = not signed in → 401. */
@@ -50,6 +61,20 @@ export interface GuardInput {
   offline?: boolean;
   code?: string;
   codeType?: string;
+  /**
+   * Silent sign-ins: the browser's device-bound key proof (`X-TouchQue-Browser`),
+   * passed through untouched. Attached to the push, so its approval makes the
+   * browser known.
+   */
+  browserProof?: string;
+  /**
+   * Silent sign-ins (default off). A new attempt that carries `browserProof`
+   * first asks TouchQue (`risk.check`); when it answers `prompt: false` the
+   * guard approves at once, with no push (`assurance.method: 'silent'`,
+   * `confirmedVia: 'SILENT'`, `reasons`). Otherwise, and on any error, the
+   * usual push starts.
+   */
+  silentSignIn?: boolean | SilentSignInOptions;
 }
 
 export interface GuardBody {
@@ -178,9 +203,15 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
     }
 
     // Anything else (no/foreign token, enrollment finished, new attempt): start.
+    const browserProof = typeof input.browserProof === 'string' && input.browserProof && input.browserProof.length <= MAX_BROWSER_PROOF
+      ? input.browserProof : undefined;
+    if (input.silentSignIn && browserProof) {
+      const silent = await silentApproval(r, { user, action, browserProof, ip: input.ip, userAgent: input.userAgent, silentSignIn: input.silentSignIn });
+      if (silent) return { status: 200, approved: silent };
+    }
     return issue(await start(r, action, {
       user, details: details.length ? details : undefined, referenceId: input.referenceId, ip: input.ip, userAgent: input.userAgent,
-      enroll: input.enroll,
+      enroll: input.enroll, browserProof,
     }));
   } catch (err) {
     if (err instanceof TouchQueConfigError) {
@@ -192,6 +223,40 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
     }
     return { status: 503, body: { touchque: { state: 'blocked', reason: 'unavailable' }, error: { code: 'unavailable', message: 'Two-factor approval is temporarily unavailable.' } } };
   }
+}
+
+/**
+ * Asks TouchQue whether this known browser may sign in without the phone.
+ * Fails closed: only an answer of exactly `prompt: false` approves; any error
+ * (network, 4xx, 5xx, a server without silent sign-ins) means "ask as usual".
+ */
+async function silentApproval(
+  r: ReturnType<typeof resources>,
+  q: { user: string; action: string; browserProof: string; ip?: string; userAgent?: string; silentSignIn: true | SilentSignInOptions },
+): Promise<Approval | null> {
+  try {
+    const maxAgeSeconds = typeof q.silentSignIn === 'object' ? q.silentSignIn.maxAgeSeconds : undefined;
+    const res = await r.risk.check({
+      externalUsername: q.user, type: q.action, clientIp: q.ip, userAgent: q.userAgent, browserProof: q.browserProof, maxAgeSeconds,
+    });
+    if (res.prompt !== false) return null;
+    return {
+      requestId: 'silent', user: q.user, action: q.action,
+      assurance: { phishingResistant: false, method: 'silent' }, confirmedVia: 'SILENT', approvalProof: null,
+      reasons: res.reasons,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** The guard input an adapter adds for silent sign-ins: the proof header, only when the option is on. */
+export function silentInputFromHeaders(
+  option: boolean | SilentSignInOptions | undefined,
+  get: (name: string) => string | undefined | null,
+): Pick<GuardInput, 'silentSignIn' | 'browserProof'> {
+  if (!option) return {};
+  return { silentSignIn: option, browserProof: get(GUARD_HEADERS.browser) || undefined };
 }
 
 /**

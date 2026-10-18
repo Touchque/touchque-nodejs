@@ -16,6 +16,7 @@ import { Webhook } from './resources/Webhook';
 import { WebAuthn } from './resources/WebAuthn';
 import { Offline } from './resources/Offline';
 import { Actions } from './resources/Actions';
+import { Risk } from './resources/Risk';
 import { TouchQueConfig } from './types';
 import { TouchQueConfigError } from './errors';
 import { registerInternals } from './internal';
@@ -30,6 +31,7 @@ export * from './resources/Webhook';
 export * from './resources/WebAuthn';
 export * from './resources/Offline';
 export * from './resources/Actions';
+export * from './resources/Risk';
 export type { Step, StepState, StartOptions, Approval, CompleteExpectations } from './steps';
 
 export const DEFAULT_BASE_URL = 'https://api.touchque.com';
@@ -45,6 +47,8 @@ export class TouchQue {
   public readonly offline: Offline;
   /** Action types (LOGIN, SEND_MONEY…) */
   public readonly actions: Actions;
+  /** Silent sign-ins: should this sign-in ask the phone, and which browsers TouchQue knows */
+  public readonly risk: Risk;
 
   /**
    * @param config - Optional. Falls back to the environment:
@@ -73,7 +77,8 @@ export class TouchQue {
     this.webauthn = new WebAuthn(http);
     this.offline = new Offline(http);
     this.actions = new Actions(http);
-    registerInternals(this, { apiSecret: resolved.apiSecret, resources: { http, auth: this.auth, login: this.login, offline: this.offline } });
+    this.risk = new Risk(http);
+    registerInternals(this, { apiSecret: resolved.apiSecret, resources: { http, auth: this.auth, login: this.login, offline: this.offline, risk: this.risk } });
   }
 
   /**
@@ -161,7 +166,7 @@ export {
 
 export { requireTouchQue, TouchQueMiddlewareOptions } from './middleware/express';
 export { withTouchQue, WithTouchQueOptions, forwardedFor, ipFromVercel, ipFromCloudflare } from './next';
-export { runGuard, GUARD_HEADERS, GuardInput, GuardResult, GuardBody } from './guard';
+export { runGuard, GUARD_HEADERS, GuardInput, GuardResult, GuardBody, SilentSignInOptions } from './guard';
 export { signGuardToken, verifyGuardToken, normalizeDetails } from './steps';
 export { touchqueRouter, TouchQueRouterOptions } from './router';
 export type { RateLimitOptions } from './rateLimiter';
@@ -182,6 +187,14 @@ export type {
   VerifyWebhookOptions,
   WebhookPayload,
   ProtectOptions,
+  RiskCheckOptions,
+  RiskCheckResult,
+  RiskReason,
+  RiskBrowser,
+  RiskBrowsersOptions,
+  RiskBrowsersResponse,
+  ForgetBrowsersOptions,
+  ForgetBrowsersResponse,
 } from './types';
 
 import { resources as internalResources } from './internal';
