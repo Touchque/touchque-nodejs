@@ -130,10 +130,19 @@ export class TouchQueConfigError extends TouchQueError {
  */
 export class TouchQuePasskeyRequiredError extends TouchQueError {
   public readonly requestId: string;
+  /**
+   * `policy`: a phishing-resistant policy, no push was sent.
+   * `step_up`: the push was tapped while the user was on a call (Vishing
+   * Shield); the request is still open and waits for a passkey in the browser.
+   */
+  public readonly reason: 'policy' | 'step_up';
 
-  constructor(requestId: string) {
-    super(`TouchQue: Request '${requestId}' must be approved with a passkey (phishing-resistant policy); no push was sent.`);
+  constructor(requestId: string, reason: 'policy' | 'step_up' = 'policy') {
+    super(reason === 'step_up'
+      ? `TouchQue: Request '${requestId}' must now be approved with a passkey: the user approved on the phone during a call.`
+      : `TouchQue: Request '${requestId}' must be approved with a passkey (phishing-resistant policy); no push was sent.`);
     this.name = 'TouchQuePasskeyRequiredError';
     this.requestId = requestId;
+    this.reason = reason;
   }
 }

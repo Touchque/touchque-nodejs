@@ -55,6 +55,12 @@ export interface Step {
    * `telemetry`). Scoped to this one request, not a credential.
    */
   telemetryToken?: string;
+  /**
+   * Mirror Alarm: the page showing this step loads `url` and beacons to it
+   * (`@touchque/web` does it), so a phishing proxy in front of your site is
+   * caught. Only on the first waiting step.
+   */
+  canary?: { url: string };
 }
 
 export interface StartOptions {
@@ -80,6 +86,17 @@ export interface Approval {
   confirmedVia: string | null;
   /** Device-signed proof of what was approved (see verifyApprovalProof). */
   approvalProof: unknown;
+  /**
+   * Vishing Shield: approved on the phone during a call. Let the user in but
+   * treat the session as limited: TouchQue refuses their critical actions
+   * until the phone re-confirms (`APPROVAL_RECONFIRMED`), and
+   * `APPROVAL_REVOKED` means end it.
+   */
+  provisional?: boolean;
+  /** The user took this approval back (see `revokeReason`). */
+  revoked?: boolean;
+  revokeReason?: 'UNDO' | 'COACHED' | null;
+  reconfirmedAt?: string | null;
 }
 
 type Resources = { http: HttpClient; auth: Auth; login: Login; offline: Offline };
@@ -109,8 +126,9 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
       userAgent: opts.userAgent,
       details: details.length ? details : undefined,
     });
+    const canary = res.canary && typeof res.canary.url === 'string' ? { canary: { url: res.canary.url } } : {};
     if (res.requiresPasskey) {
-      return { state: 'passkey_required', requestId: res.requestId, expiresAt: res.expiresAt, details: details.length ? details : undefined };
+      return { state: 'passkey_required', requestId: res.requestId, expiresAt: res.expiresAt, details: details.length ? details : undefined, ...canary };
     }
     return {
       state: 'waiting',
@@ -119,6 +137,7 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
       expiresAt: res.expiresAt,
       details: details.length ? details : undefined,
       ...(res.telemetryToken && { telemetryToken: res.telemetryToken }),
+      ...canary,
     };
   } catch (err) {
     if (!(err instanceof TouchQueAPIError)) throw err;
@@ -190,6 +209,7 @@ export async function complete(r: Resources, requestId: string, expect: Complete
   const res = await r.http.post<{
     externalUsername: string; type: string; referenceId: string | null; details: Array<{ label: string; value: string }> | null;
     confirmedVia: string | null; assurance: ApprovalAssurance | null; approvalProof: unknown;
+    provisional?: boolean; revoked?: boolean; revokeReason?: 'UNDO' | 'COACHED' | null; reconfirmedAt?: string | null;
   }>(`/login/${encodeURIComponent(requestId)}/consume`, {});
   const sameUser = String(res.externalUsername).toLowerCase() === String(expect.user).toLowerCase();
   const sameDetails = detailsDigest(normalizeDetails(expect.details)) === detailsDigest(res.details || []);
@@ -204,6 +224,10 @@ export async function complete(r: Resources, requestId: string, expect: Complete
     assurance: res.assurance,
     confirmedVia: res.confirmedVia,
     approvalProof: res.approvalProof,
+    // Servers before the Vishing Shield send none of these.
+    ...(res.provisional !== undefined && {
+      provisional: res.provisional === true, revoked: res.revoked === true, revokeReason: res.revokeReason ?? null, reconfirmedAt: res.reconfirmedAt ?? null,
+    }),
   };
 }
 

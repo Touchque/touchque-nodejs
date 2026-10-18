@@ -91,6 +91,9 @@ export class Login {
    *
    * @throws {TouchQueRejectedError} If the user rejects the request
    * @throws {TouchQueTimeoutError} If the request times out (user didn't respond)
+   * @throws {TouchQuePasskeyRequiredError} If the request now needs a passkey
+   *   (`reason: 'step_up'`: the user approved on the phone during a call);
+   *   finish it in the browser with `@touchque/web` `passkeys.approveLogin({ requestId })`
    *
    * @example
    * // Simple: Send request and wait for approval in one step
@@ -123,7 +126,7 @@ export class Login {
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
-      const { status } = await this.status(options.requestId);
+      const { status, requiresPasskey } = await this.status(options.requestId);
 
       if (status === 'CONFIRMED') {
         return { approved: true, status };
@@ -135,6 +138,12 @@ export class Login {
 
       if (status === 'EXPIRED') {
         throw new TouchQueTimeoutError(options.requestId, timeout);
+      }
+
+      // Vishing Shield: the phone was on a call at the tap, so the request now
+      // waits for a passkey in the browser; polling would only run into the timeout.
+      if (status === 'PENDING' && requiresPasskey) {
+        throw new TouchQuePasskeyRequiredError(options.requestId, 'step_up');
       }
 
       // Wait before next poll
@@ -152,6 +161,8 @@ export class Login {
    *
    * @throws {TouchQueRejectedError} User rejected
    * @throws {TouchQueTimeoutError} User didn't respond in time
+   * @throws {TouchQuePasskeyRequiredError} A passkey must approve it (policy, or the
+   *   user tapped Approve during a call)
    *
    * @example
    * // Protect an action with 2FA — ONE LINE!

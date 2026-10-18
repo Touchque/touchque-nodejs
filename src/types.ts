@@ -242,6 +242,14 @@ export interface LoginRequestResponse {
    * (`@touchque/web` `passkeys.approveLogin({ requestId })`).
    */
   requiresPasskey?: boolean;
+  /**
+   * Mirror Alarm: have the page that shows this sign-in load `url` (a hidden
+   * image) and send a beacon to it (`@touchque/web` does both). A page that is
+   * not on your site, i.e. a real-time phishing proxy, gets the approval
+   * refused (webhook reason `phishing_origin`). Allow its host in your CSP
+   * `img-src` and `connect-src`.
+   */
+  canary?: { url: string };
 }
 
 /** How an approved request was confirmed, and whether that is phishing-resistant. */
@@ -265,8 +273,25 @@ export interface LoginStatusResponse {
   approvalProof?: import('./approvalProof').ApprovalProof | null;
   /** Set once CONFIRMED: rely on `assurance.phishingResistant` for high-assurance sessions. */
   assurance?: ApprovalAssurance | null;
-  /** The request can only be approved with a passkey (phishing-resistant policy). */
+  /**
+   * The request can only be approved with a passkey: a phishing-resistant
+   * policy, or the Vishing Shield moved it to a passkey at the phone tap
+   * because the user was on a call (it is still PENDING then).
+   */
   requiresPasskey?: boolean;
+  /**
+   * Vishing Shield: approved on the phone during a call. Still CONFIRMED;
+   * the user's critical actions are refused (`blocked` / `provisional`) until
+   * the phone re-confirms it after the call (`reconfirmedAt`) or the user
+   * takes it back (`revoked`).
+   */
+  provisional?: boolean;
+  /** When the phone re-confirmed a provisional approval after the call. */
+  reconfirmedAt?: string | null;
+  /** The user took this approval back on the phone: end what was built on it. */
+  revoked?: boolean;
+  /** `COACHED`: someone on the phone told the user to approve. `UNDO`: the user undid it. */
+  revokeReason?: 'UNDO' | 'COACHED' | null;
 }
 
 export interface WaitForApprovalOptions {
@@ -330,8 +355,52 @@ export interface WebhookPayload {
   approvalProof?: import('./approvalProof').ApprovalProof;
   /** On SUCCESS: how it was approved and whether that was phishing-resistant. */
   assurance?: ApprovalAssurance;
+  /** On REJECTED: why (see `WebhookReasons`). Treat unknown values as a rejection. */
+  reason?: string;
+  /** On SUCCESS: approved during a call (Vishing Shield); an `APPROVAL_RECONFIRMED` or `APPROVAL_REVOKED` event follows. */
+  provisional?: boolean;
   [key: string]: unknown;
 }
+
+/**
+ * `reason` values of a REJECTED login webhook. Treat a value you do not know
+ * as a rejection: new ones are added in minor versions.
+ */
+export const WebhookReasons = {
+  /** The user tapped Reject. */
+  USER_REJECTED: 'user_rejected',
+  /** The user said "this wasn't me": 2FA is frozen. */
+  USER_REPORTED_FRAUD: 'user_reported_fraud',
+  /** The user said someone on the phone told them to approve: 2FA is frozen; treat it as a takeover in progress. */
+  USER_REPORTED_COACHED: 'user_reported_coached',
+  /** Approved, then refused by the risk engine on evidence seen at the tap. */
+  RISK_REVERSED: 'risk_reversed',
+  /** Refused for now; the user's next request asks for number matching. */
+  RISK_STEP_UP: 'risk_step_up',
+  /** The approval carried a device signature that did not verify. */
+  APPROVAL_SIGNATURE_INVALID: 'approval_signature_invalid',
+  /** The phone reports itself jailbroken or tampered and the action is critical. */
+  DEVICE_INTEGRITY_FAILED: 'device_integrity_failed',
+  /** Vishing Shield: approved during a call (or with the screen shared / remote-controlled), critical, and no passkey to fall back on. */
+  VISHING_SUSPECTED: 'vishing_suspected',
+  /** Mirror Alarm: the sign-in page was not on your site (a real-time phishing proxy). */
+  PHISHING_ORIGIN: 'phishing_origin',
+} as const;
+
+/**
+ * `event` values of TouchQue's event webhooks (same `callbackUrl` as the
+ * login results). Ignore types you do not know.
+ */
+export const WebhookEvents = {
+  DEVICE_LINKED: 'DEVICE_LINKED',
+  DEVICE_UNLINKED: 'DEVICE_UNLINKED',
+  PASSKEY_REGISTERED: 'PASSKEY_REGISTERED',
+  PASSKEY_DELETED: 'PASSKEY_DELETED',
+  /** After the call, the user confirmed a provisional approval was theirs: critical actions are allowed again. */
+  APPROVAL_RECONFIRMED: 'APPROVAL_RECONFIRMED',
+  /** The user took an approval back (`reason`: `COACHED` or `UNDO`): end the session or stop the action built on it. */
+  APPROVAL_REVOKED: 'APPROVAL_REVOKED',
+} as const;
 
 // ─── Protect Wrapper ─────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { TouchQue, withTouchQue, ipFromVercel, TouchQueConfigError, TouchQueError } from './index';
+import { TouchQue, withTouchQue, ipFromVercel, TouchQueConfigError, TouchQueError, runGuard, WebhookReasons, WebhookEvents } from './index';
 import { startFakeApi, FakeApi } from './testing/fakeApi';
 
 let api: FakeApi;
@@ -76,6 +76,56 @@ describe('behavioural telemetry (R1-04)', () => {
     expect((await api.client.start('LOGIN', { user: 'jane@acme.com' })).telemetryToken).toBeUndefined();
     api.opts.telemetry = true;
     expect((await api.client.start('LOGIN', { user: 'jane@acme.com' })).telemetryToken).toBe('tt_test');
+  });
+});
+
+describe('Vishing Shield', () => {
+  test('the first waiting step carries the Mirror Alarm canary; polls do not', async () => {
+    expect((await api.client.start('LOGIN', { user: 'jane@acme.com' })).canary).toBeUndefined();
+    api.opts.canary = true;
+    const first = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN' });
+    expect(first.body!.touchque.canary!.url).toMatch(/\/c\/canary-.+\.gif$/);
+    const poll = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: first.body!.token });
+    expect(poll.body!.touchque).toMatchObject({ state: 'waiting' });
+    expect(poll.body!.touchque.canary).toBeUndefined();
+  });
+
+  test('a push tapped during a call becomes passkey_required mid-flight, also from the offline QR', async () => {
+    const first = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN' });
+    const offline = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: first.body!.token, offline: true });
+    expect(offline.body!.touchque.state).toBe('offline');
+    api.escalate();
+    const poll = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: offline.body!.token });
+    expect(poll.status).toBe(202);
+    expect(poll.body!.touchque).toMatchObject({ state: 'passkey_required', requestId: first.body!.touchque.requestId });
+    // A code typed for that QR is refused by TouchQue: the step says passkey, not "blocked".
+    const typed = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: offline.body!.token, code: 'ABCD123' });
+    expect(typed.body!.touchque).toMatchObject({ state: 'passkey_required', requestId: first.body!.touchque.requestId });
+  });
+
+  test('a provisional approval says so; critical actions are blocked until the phone re-confirms', async () => {
+    const tq = api.client;
+    const step = await tq.start('LOGIN', { user: 'jane@acme.com' });
+    api.approve(undefined, 'DEVICE', { provisional: true });
+    const approval = await tq.complete(step.requestId!, { user: 'jane@acme.com', action: 'LOGIN' });
+    expect(approval).toMatchObject({ provisional: true, revoked: false, revokeReason: null, reconfirmedAt: null });
+    expect(await tq.start('SEND_MONEY', { user: 'jane@acme.com' })).toEqual({ state: 'blocked', reason: 'provisional' });
+    api.reconfirm(step.requestId);
+    expect((await tq.start('SEND_MONEY', { user: 'jane@acme.com' })).state).toBe('waiting');
+  });
+
+  test('an approval taken back on the phone is never used', async () => {
+    const first = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN' });
+    api.approve();
+    api.revoke(undefined, 'COACHED');
+    const done = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: first.body!.token });
+    expect(done.status).toBe(408);
+    expect(done.body!.touchque).toMatchObject({ state: 'expired', reason: 'revoked' });
+  });
+
+  test('webhook reason and event constants', () => {
+    expect(WebhookReasons).toMatchObject({ VISHING_SUSPECTED: 'vishing_suspected', PHISHING_ORIGIN: 'phishing_origin', USER_REPORTED_COACHED: 'user_reported_coached' });
+    expect(WebhookEvents).toMatchObject({ APPROVAL_REVOKED: 'APPROVAL_REVOKED', APPROVAL_RECONFIRMED: 'APPROVAL_RECONFIRMED' });
   });
 });
 

@@ -115,6 +115,8 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
       if (res.reason === 'invalid_code') return issue({ state: 'offline', reason: 'invalid_code' }, { oc: bound.oc, rid: bound.rid, n: bound.n });
       // The phone rejected the push this QR belongs to: the whole sign-in is over, no other factor may finish it.
       if (res.reason === 'request_rejected') return issue({ state: 'rejected', requestId: bound.rid, reason: 'request_rejected' });
+      // The push now waits for a passkey (Vishing Shield): no code may finish it.
+      if (res.reason === 'passkey_required' && bound.rid) return issue({ state: 'passkey_required', requestId: bound.rid, number: bound.n }, { n: bound.n });
       return issue({ state: res.reason === 'expired' ? 'expired' : 'blocked', reason: res.reason || 'offline_failed' });
     }
 
@@ -137,6 +139,10 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
         if (err instanceof TouchQueAPIError && err.status === 409 && (err.code || (err.data as { error?: string })?.error) === 'request_rejected') {
           return issue({ state: 'rejected', requestId: bound?.rid, reason: 'request_rejected' });
         }
+        // The push it would follow now waits for a passkey (Vishing Shield): no QR, run the passkey instead.
+        if (err instanceof TouchQueAPIError && bound?.rid && (err.code || (err.data as { error?: string })?.error) === 'passkey_required') {
+          return issue({ state: 'passkey_required', requestId: bound.rid, number: bound.n }, { n: bound.n });
+        }
         if (err instanceof TouchQueAPIError && err.status < 500) {
           return issue({ state: 'blocked', reason: err.code || (err.data as { error?: string })?.error || 'offline_unavailable' });
         }
@@ -156,7 +162,12 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
           throw err;
         }
       }
-      if (bound.st === 'offline' && (now.state === 'waiting' || now.state === 'expired' || now.state === 'passkey_required')) {
+      // The push behind the QR was moved to a passkey after it was tapped during a call
+      // (Vishing Shield): the QR's code would be refused now, so switch to the passkey.
+      if (bound.st === 'offline' && now.state === 'passkey_required') {
+        return issue({ state: 'passkey_required', requestId: bound.rid, number: bound.n }, { n: bound.n });
+      }
+      if (bound.st === 'offline' && (now.state === 'waiting' || now.state === 'expired')) {
         // Still (or no longer) pending: nothing changed for the user — keep showing the QR they have.
         return issue({ state: 'offline', offline: { challengeId: String(bound.oc) } }, { oc: bound.oc, rid: bound.rid, n: bound.n });
       }

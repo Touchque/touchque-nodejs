@@ -12,6 +12,7 @@ export interface FakeRequest {
   details: Array<{ label: string; value: string }> | null;
   status: 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'EXPIRED';
   challengeCode?: string; requiresPasskey?: boolean; consumed: boolean; confirmedVia?: string;
+  provisional?: boolean; reconfirmedAt?: string; revokedAt?: string; revokeReason?: 'UNDO' | 'COACHED';
 }
 
 export interface FakeApi {
@@ -22,9 +23,13 @@ export interface FakeApi {
   actions: Map<string, { critical: boolean; active: boolean }>;
   calls: Array<{ method: string; path: string; body: any }>;
   /** Behaviour switches */
-  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string };
-  approve(id?: string, via?: string): void;
+  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string };
+  approve(id?: string, via?: string, extra?: { provisional?: boolean }): void;
   reject(id?: string): void;
+  /** Vishing Shield: the phone tap moved the request to a passkey (still PENDING). */
+  escalate(id?: string): void;
+  revoke(id?: string, reason?: 'UNDO' | 'COACHED'): void;
+  reconfirm(id?: string): void;
   close(): Promise<void>;
 }
 
@@ -57,6 +62,9 @@ export async function startFakeApi(): Promise<FakeApi> {
     const action = api.actions.get(type);
     if (!action) return res.status(400).json({ code: 'unknown_action', error: `Invalid action type: ${type}` });
     if (api.opts.blocked) return res.status(403).json({ code: 'blocked', reason: api.opts.blocked, error: 'blocked' });
+    if (action.critical && api.requests.some((x) => x.user === user && x.status === 'CONFIRMED' && x.provisional && !x.reconfirmedAt && !x.revokedAt)) {
+      return res.status(403).json({ code: 'blocked', reason: 'provisional', error: 'blocked' });
+    }
     const r: FakeRequest = {
       id: `00000000-0000-4000-8000-${String(++seq).padStart(12, '0')}`, user, type, referenceId, details: toPairs(details),
       status: 'PENDING', consumed: false,
@@ -67,7 +75,11 @@ export async function startFakeApi(): Promise<FakeApi> {
     res.json({
       message: 'Request sent', requestId: r.id, challengeCode: r.challengeCode, expiresAt: new Date(Date.now() + 30000).toISOString(), requiresPasskey: r.requiresPasskey,
       ...(api.opts.telemetry && { telemetryToken: 'tt_test' }),
+      ...(api.opts.canary && { canary: { url: `http://127.0.0.1:1/c/canary-${r.id}.gif` } }),
     });
+  });
+  const shieldFields = (r: FakeRequest) => ({
+    provisional: Boolean(r.provisional), reconfirmedAt: r.reconfirmedAt || null, revoked: Boolean(r.revokedAt), revokeReason: r.revokeReason || null,
   });
 
   app.get('/login/status/:id', (req, res) => {
@@ -77,6 +89,7 @@ export async function startFakeApi(): Promise<FakeApi> {
       status: r.status, externalUsername: r.user, type: r.type, referenceId: r.referenceId, details: r.details, consumed: r.consumed,
       requiresPasskey: r.requiresPasskey, confirmedVia: r.confirmedVia || null,
       assurance: r.status === 'CONFIRMED' ? { phishingResistant: r.confirmedVia === 'WEBAUTHN', method: r.confirmedVia === 'WEBAUTHN' ? 'passkey' : 'push' } : null,
+      ...shieldFields(r),
     });
   });
 
@@ -85,10 +98,12 @@ export async function startFakeApi(): Promise<FakeApi> {
     if (!r) return res.status(404).json({ code: 'not_found' });
     if (r.status !== 'CONFIRMED') return res.status(409).json({ code: r.status === 'REJECTED' ? 'rejected' : r.status === 'EXPIRED' ? 'expired' : 'not_approved' });
     if (r.consumed) return res.status(409).json({ code: 'already_used' });
+    if (r.revokedAt) return res.status(409).json({ code: 'revoked' });
     r.consumed = true;
     res.json({
       consumed: true, requestId: r.id, externalUsername: r.user, type: r.type, referenceId: r.referenceId, details: r.details,
       confirmedVia: r.confirmedVia, assurance: { phishingResistant: r.confirmedVia === 'WEBAUTHN', method: r.confirmedVia === 'WEBAUTHN' ? 'passkey' : 'push' }, approvalProof: null,
+      ...shieldFields(r),
     });
   });
 
@@ -131,6 +146,7 @@ export async function startFakeApi(): Promise<FakeApi> {
     const linked = req.body.requestId ? api.requests.find((x) => x.id === req.body.requestId) : undefined;
     if (req.body.requestId && !linked) return res.status(404).json({ error: 'request_not_found' });
     if (linked?.status === 'REJECTED') return res.status(409).json({ error: 'request_rejected' });
+    if (linked?.requiresPasskey) return res.status(403).json({ error: 'passkey_required', reason: 'passkey_required' });
     const id = `ch-${++seq}`;
     api.challenges.set(id, { user: req.body.externalUsername, type: req.body.type, used: false, requestId: linked?.id });
     const challengeCode = linked?.challengeCode || (req.body.requireNumberMatch === true ? '47' : undefined);
@@ -141,6 +157,7 @@ export async function startFakeApi(): Promise<FakeApi> {
     if (!ch) return res.status(404).json({ approved: false, reason: 'unknown_challenge' });
     if (ch.used) return res.status(410).json({ approved: false, reason: 'used' });
     if (ch.requestId && api.requests.find((x) => x.id === ch.requestId)?.status === 'REJECTED') return res.status(410).json({ approved: false, reason: 'request_rejected' });
+    if (ch.requestId && api.requests.find((x) => x.id === ch.requestId)?.requiresPasskey) return res.status(403).json({ approved: false, reason: 'passkey_required' });
     if (req.body.code !== (api.opts.offlineCode || 'ABCD123')) return res.status(401).json({ approved: false, reason: 'invalid_code', attemptsLeft: 4 });
     ch.used = true;
     res.json({ approved: true, challengeId: req.body.challengeId, externalUsername: ch.user, type: ch.type });
@@ -158,8 +175,11 @@ export async function startFakeApi(): Promise<FakeApi> {
 
   return Object.assign(api, {
     client,
-    approve(id?: string, via = 'DEVICE') { const r = pick(id); r.status = 'CONFIRMED'; r.confirmedVia = via; },
+    approve(id?: string, via = 'DEVICE', extra: { provisional?: boolean } = {}) { const r = pick(id); r.status = 'CONFIRMED'; r.confirmedVia = via; r.provisional = Boolean(extra.provisional); },
     reject(id?: string) { pick(id).status = 'REJECTED'; },
+    escalate(id?: string) { const r = pick(id); r.requiresPasskey = true; r.challengeCode = undefined; },
+    revoke(id?: string, reason: 'UNDO' | 'COACHED' = 'COACHED') { const r = pick(id); r.revokedAt = new Date().toISOString(); r.revokeReason = reason; },
+    reconfirm(id?: string) { pick(id).reconfirmedAt = new Date().toISOString(); },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   });
 }

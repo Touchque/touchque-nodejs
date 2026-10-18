@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Login } from './Login';
-import { TouchQueRejectedError, TouchQueTimeoutError } from '../errors';
+import { TouchQueRejectedError, TouchQueTimeoutError, TouchQuePasskeyRequiredError } from '../errors';
 import type { HttpClient } from '../core/HttpClient';
 
 function fakeHttp() {
@@ -167,5 +167,17 @@ describe('Login — phishing-resistant policy', () => {
     expect(err).toBeInstanceOf(TouchQuePasskeyRequiredError);
     expect(err.requestId).toBe('req_p');
     expect((http as any).get).not.toHaveBeenCalled();
+  });
+  test('waitForApproval / verify stop polling when the request moves to a passkey mid-flight (Vishing Shield)', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ requestId: 'req_1', message: 'ok', expiresAt: 't' });
+    (http.get as any)
+      .mockResolvedValueOnce({ status: 'PENDING' })
+      .mockResolvedValue({ status: 'PENDING', requiresPasskey: true });
+    const login = new Login(http);
+    const err = await login.verify({ externalUsername: 'a@b.com', type: 'LOGIN', pollInterval: 1, timeout: 5000 }).catch((e) => e);
+    expect(err).toBeInstanceOf(TouchQuePasskeyRequiredError);
+    expect(err).toMatchObject({ requestId: 'req_1', reason: 'step_up' });
+    expect(http.get).toHaveBeenCalledTimes(2);
   });
 });
