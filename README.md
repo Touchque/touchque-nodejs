@@ -102,7 +102,9 @@ second call.
   Without an address the risk checks that need one (Tor, location, travel) are skipped.
 - **`touchqueRouter`**: mounts every relay route a frontend needs
   (`POST /login`, enrollment, passkey ceremonies, offline codes) so you don't
-  hand-write them.
+  hand-write them. `POST /passkey/authenticate/options` with no `email` answers options for any passkey of
+  your site, which `@touchque/web`'s passkey autofill (`passkeys.autofill()`) uses; the passkey the user picks
+  names the account (`tq.webauthn.primaryOptions()` with no `externalUsername` does the same).
 
 ```typescript
 import { touchqueRouter } from '@touchque/node';
@@ -207,6 +209,39 @@ sign-in and sends a beacon to it, so a real-time phishing proxy in front of your
 approval is refused (`reason: 'phishing_origin'`) and the phone warns the user. Allow the canary host in your
 Content-Security-Policy (`img-src` and `connect-src`).
 
+## TouchQue Actions (your code in the approval pipeline)
+
+Alerts, step-ups and refusals by country, local time, role or amount, passkeys
+for admins — from a template or a few lines of JavaScript, replayed against your
+real recent sign-ins before they go live. Full guide: [ACTIONS.md](../ACTIONS.md).
+
+```ts
+import type { LoginRequestEvent, LoginRequestApi } from '@touchque/node';
+
+// A no-code template
+await tq.actions.deploy('night-alert', {
+  trigger: 'approval.decided',
+  template: { id: 'alert', params: { channel: 'slack', when: { countries: ['TR'], hours: { from: 0, to: 6 } } } },
+});
+
+// Your own typed function (self-contained: it is sent as source text)
+await tq.actions.deploy('admins-use-passkeys', {
+  trigger: 'login.request',
+  handler: async (event: LoginRequestEvent, api: LoginRequestApi) => {
+    if ((event.context?.roles as string[] | undefined)?.includes('admin')) api.requirePasskey('Admins approve with a passkey');
+  },
+});
+
+// Before deploying: how many of the last 500 real decisions would it change?
+const report = await tq.actions.dryRun({ trigger: 'login.request', handler: myDraft });
+// report.transitions → { 'push→passkey': 12 }
+```
+
+Give Actions what only your server knows with `context` (never shown on the phone):
+`requireTouchQue('SEND_MONEY', { context: (req) => ({ roles: req.user.roles, amount: req.body.amount }) })`.
+Loosening calls (`skipNumberMatch`, `overrideBlock`, `allowSilent`) need a capability an
+admin approves on their phone. Action types moved to `tq.actionTypes` in 4.0.
+
 ## Silent sign-ins (stop asking when nothing is new)
 
 A user who approved on their phone in this browser a little while ago, from the same phone, network and country,
@@ -260,6 +295,74 @@ await tq.risk.forgetBrowsers({ externalUsername: user });                    // 
 
 Forget a user's browsers after a password reset or a "sign out everywhere". `risk.check` reads the answer fail-closed:
 `prompt` is `false` only when TouchQue answered the boolean `false`.
+
+## Never Locked Out (lost, dead or new phone)
+
+A user whose phone is gone moves to a new phone without a help desk. Colleagues they named beforehand vouch on their own
+phones, each typing a number the user reads them on a call; then a cooling-off (default 60 minutes) lets the old phone, any
+voucher or an admin stop it. The risk engine can refuse it or ask for more vouchers, and for 24 hours afterwards critical
+actions are refused. It is an option: offer it next to passkeys and the old phone's transfer, never as the only way.
+
+```ts
+// Settings page, after an approval on the user's phone:
+await tq.recovery.setVouchers({ externalUsername: user, vouchers: ['bo@acme.com', 'cy@acme.com'] });
+
+// "I lost my phone", after the password:
+const r = await tq.recovery.start({ externalUsername: user, clientIp: req.ip, displayName: 'Ada', fallbackVouchers: admins });
+showQr(r.bindUri);                     // the TouchQue app on the new phone scans it
+const now = await tq.recovery.status(r.recoveryId);
+now.vouchers.forEach((v) => show(v.externalUsername, v.code)); // read each code to that colleague
+// now.status: AWAITING_DEVICE → VOUCHING → COOLING → COMPLETED (or VETOED / EXPIRED / FAILED)
+
+// An admin who does not believe it:
+await tq.recovery.veto(r.recoveryId, { by: 'admin@acme.com' });
+```
+
+Every step is a hash-chained receipt (`receipts`); a voucher's step carries the signature of their phone's hardware key.
+
+## "Why?": case codes instead of guesswork
+
+Every approval decision names a short case code (`K7P-2QX`: 6 characters, no I, O, 0 or 1). A user who was asked to
+match a number, needed a passkey or was refused reads it out to your support team, and the team opens the whole
+decision by it in the TouchQue dashboard (Logs → Look up a case): what went in, each check's verdict (the access rule
+that matched, the risk signals that were acted on and the ones only measured), and the single change that would have
+let it through. No screenshots, no log digging. The code opens nothing on its own: only your workspace sees its
+decisions.
+
+```ts
+const step = await tq.start('WITHDRAW', { user, ip: req.ip });
+// step.caseCode → 'K7P-2QX'; step.reasons → [{ code: 'critical_action', text: 'The action is marked critical' }]
+try {
+  await tq.login.request({ externalUsername: user, type: 'LOGIN' });
+} catch (err) {
+  if (err instanceof TouchQueAPIError && err.caseCode) show(`Tell your support team: ${err.caseCode}`);
+}
+```
+
+`caseCode` is on `LoginRequestResponse`, `RiskCheckResult`, `TouchQueAPIError` and every step (the guard keeps it
+while it waits); `reasons` says why number matching or a passkey is needed, from a fixed list, never a score.
+
+## Blocking `verify()` and number matching
+
+`login.verify()` sends the request and waits for the phone in one call. With number matching (your option, a
+workspace policy, a critical action or the risk engine can turn it on) the phone asks the user to pick a number,
+and the call returns only after they have. Pass `onChallenge`: it runs once, right after the request is created and
+before the wait. **Show `challengeCode` to the user now; the phone asks for it.**
+
+```typescript
+await tq.login.verify({
+  externalUsername: user, type: 'SEND_MONEY',
+  onChallenge: ({ challengeCode, caseCode }) => {
+    if (challengeCode) socket.emit('touchque', { text: `Pick ${challengeCode} on your phone`, caseCode });
+  },
+});
+```
+
+It gets `{ requestId, challengeCode?, expiresAt, reasons?, caseCode? }`. It is not called when only a passkey can
+approve (`verify()` throws `TouchQuePasskeyRequiredError` first). An error it throws, or a promise it returns that
+rejects, is logged and ignored: `verify()` keeps waiting. `tq.protect()` takes the same `onChallenge`. In a web
+request, where the page hears nothing until you answer, use the router or `tq.start()`: their first answer already
+carries the number.
 
 ## Verifying the device proof (no need to trust TouchQue)
 

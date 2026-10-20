@@ -21,6 +21,8 @@ export class TouchQueAPIError extends TouchQueError {
   public readonly status: number;
   public readonly code: string | undefined;
   public readonly data: TouchQueErrorData;
+  /** "Why?" case code of a refusal (`K7P-2QX`), to show the user; undefined for other errors. */
+  public readonly caseCode: string | undefined;
 
   constructor(status: number, data: TouchQueErrorData) {
     const message = data.message || data.error || `TouchQue API Error: HTTP ${status}`;
@@ -29,6 +31,7 @@ export class TouchQueAPIError extends TouchQueError {
     this.status = status;
     this.code = data.code;
     this.data = data;
+    this.caseCode = typeof data.caseCode === 'string' ? data.caseCode : undefined;
   }
 }
 

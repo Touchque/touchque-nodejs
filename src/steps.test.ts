@@ -61,10 +61,10 @@ describe('start / check / complete', () => {
       .rejects.toBeInstanceOf(TouchQueError);
   });
 
-  test('actions.define sends the slug, name and critical flag; omits what was not given', async () => {
+  test('actionTypes.define sends the slug, name and critical flag; omits what was not given', async () => {
     const tq = api.client;
-    await tq.actions.define('SEND_MONEY', { name: 'Send money', critical: true }).catch(() => undefined);
-    await tq.actions.define('EXPORT').catch(() => undefined);
+    await tq.actionTypes.define('SEND_MONEY', { name: 'Send money', critical: true }).catch(() => undefined);
+    await tq.actionTypes.define('EXPORT').catch(() => undefined);
     const bodies = api.calls.filter((c) => c.path === '/action-types').map((c) => c.body);
     expect(bodies[0]).toEqual({ type: 'SEND_MONEY', name: 'Send money', critical: true });
     expect(bodies[1]).toEqual({ type: 'EXPORT', name: 'EXPORT' });
@@ -109,7 +109,7 @@ describe('Vishing Shield', () => {
     api.approve(undefined, 'DEVICE', { provisional: true });
     const approval = await tq.complete(step.requestId!, { user: 'jane@acme.com', action: 'LOGIN' });
     expect(approval).toMatchObject({ provisional: true, revoked: false, revokeReason: null, reconfirmedAt: null });
-    expect(await tq.start('SEND_MONEY', { user: 'jane@acme.com' })).toEqual({ state: 'blocked', reason: 'provisional' });
+    expect(await tq.start('SEND_MONEY', { user: 'jane@acme.com' })).toEqual({ state: 'blocked', reason: 'provisional', caseCode: 'REF-USE' });
     api.reconfirm(step.requestId);
     expect((await tq.start('SEND_MONEY', { user: 'jane@acme.com' })).state).toBe('waiting');
   });
@@ -164,5 +164,33 @@ describe('withTouchQue (Next.js / Fetch API)', () => {
     expect(await sent({ trustedProxyHops: 2 })).toBe('1.2.3.4');
     expect(await sent({ trustedProxyHops: 3 })).toBeUndefined();
     expect(await sent({ ip: ipFromVercel })).toBe('198.51.100.4');
+  });
+});
+
+describe('"Why?" case codes', () => {
+  test('a number-matched step names its case and plain reasons; a refusal names its case', async () => {
+    api.actions.set('WIRE', { critical: true, active: true });
+    const step = await api.client.start('WIRE', { user: 'jane@acme.com' });
+    expect(step).toMatchObject({ state: 'waiting', number: '47', caseCode: 'K7P-2QX', reasons: [{ code: 'critical_action', text: 'The action is critical' }] });
+    api.opts.blocked = 'access_policy';
+    expect(await api.client.start('LOGIN', { user: 'jane@acme.com' })).toEqual({ state: 'blocked', reason: 'access_policy', caseCode: 'REF-USE' });
+    api.opts.blocked = undefined;
+    api.opts.frozen = true;
+    expect(await api.client.start('LOGIN', { user: 'jane@acme.com' })).toMatchObject({ state: 'frozen', caseCode: 'REF-USE' });
+  });
+
+  test('the raw API error and the silent check carry it too', async () => {
+    api.opts.blocked = 'risk';
+    await expect(api.client.login.request({ externalUsername: 'jane@acme.com', type: 'LOGIN' })).rejects.toMatchObject({ status: 403, caseCode: 'REF-USE' });
+    api.opts.blocked = undefined;
+    expect((await api.client.risk.check({ externalUsername: 'jane@acme.com' })).caseCode).toBe('CHK-2QX');
+  });
+
+  test('the guard keeps showing the case while it waits', async () => {
+    api.actions.set('WIRE', { critical: true, active: true });
+    const first = await runGuard(api.client, { action: 'WIRE', user: 'jane@acme.com' });
+    const again = await runGuard(api.client, { action: 'WIRE', user: 'jane@acme.com', token: (first.body as any).token });
+    expect((first.body as any).touchque.caseCode).toBe('K7P-2QX');
+    expect((again.body as any).touchque).toMatchObject({ state: 'waiting', caseCode: 'K7P-2QX' });
   });
 });

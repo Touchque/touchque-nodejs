@@ -47,6 +47,13 @@ export interface Step {
     challengeCode?: string;
   };
   reason?: string;
+  /**
+   * "Why?" case code of this decision (`K7P-2QX`): show it with the step
+   * ("Tell your support team: K7P-2QX"). Safe for the browser.
+   */
+  caseCode?: string;
+  /** Why number matching, a passkey or a refusal (plain English, a fixed list, never a score). */
+  reasons?: RiskReason[];
   retryAfter?: number;
   assurance?: ApprovalAssurance;
   /**
@@ -80,6 +87,8 @@ export interface StartOptions {
    * passed through untouched. Once the user approves, TouchQue knows this browser.
    */
   browserProof?: string;
+  /** For your TouchQue Actions only (`event.context`): roles, plan, amount… Never shown on the phone. */
+  context?: Record<string, unknown>;
 }
 
 export interface Approval {
@@ -136,10 +145,12 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
       userAgent: opts.userAgent,
       details: details.length ? details : undefined,
       browserProof: opts.browserProof,
+      context: opts.context,
     });
     const canary = res.canary && typeof res.canary.url === 'string' ? { canary: { url: res.canary.url } } : {};
+    const why = whyOf(res);
     if (res.requiresPasskey) {
-      return { state: 'passkey_required', requestId: res.requestId, expiresAt: res.expiresAt, details: details.length ? details : undefined, ...canary };
+      return { state: 'passkey_required', requestId: res.requestId, expiresAt: res.expiresAt, details: details.length ? details : undefined, ...canary, ...why };
     }
     return {
       state: 'waiting',
@@ -149,20 +160,22 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
       details: details.length ? details : undefined,
       ...(res.telemetryToken && { telemetryToken: res.telemetryToken }),
       ...canary,
+      ...why,
     };
   } catch (err) {
     if (!(err instanceof TouchQueAPIError)) throw err;
     const code = codeOf(err);
     const data = err.data as { retryAfter?: number; reason?: string; error?: string };
+    const why = err.caseCode ? { caseCode: err.caseCode } : {};
     if (err.status === 404 && (code === 'device_not_linked' || /linked device/i.test(err.message))) {
       if (opts.enroll === false) return { state: 'enroll' };
       return enrollStep(r, opts.user);
     }
-    if (err.status === 423) return { state: 'frozen', retryAfter: data.retryAfter };
-    if (err.status === 429) return { state: 'rate_limited', retryAfter: data.retryAfter };
+    if (err.status === 423) return { state: 'frozen', retryAfter: data.retryAfter, ...why };
+    if (err.status === 429) return { state: 'rate_limited', retryAfter: data.retryAfter, ...why };
     if (err.status === 400 && (code === 'unknown_action' || /Invalid action type/i.test(err.message))) {
       throw new TouchQueConfigError(
-        `Unknown action "${action}". Create it once with tq.actions.define('${action}') or in the Dashboard (Action Types).`,
+        `Unknown action "${action}". Create it once with tq.actionTypes.define('${action}') or in the Dashboard (Action Types).`,
       );
     }
     if (err.status === 403) {
@@ -170,10 +183,22 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
         : code === 'passkey_not_registered' || data.error === 'phishing_resistant_required' ? 'passkey_not_registered'
           : code === 'action_disabled' ? 'action_disabled'
             : code || 'blocked';
-      return { state: 'blocked', reason };
+      return { state: 'blocked', reason, ...why };
     }
     throw err;
   }
+}
+
+/** The case code and plain reasons of a login request's answer, for its step. */
+function whyOf(res: { caseCode?: unknown; reasons?: unknown }): Pick<Step, 'caseCode' | 'reasons'> {
+  const reasons = Array.isArray(res.reasons)
+    ? res.reasons.filter((r): r is RiskReason => Boolean(r) && typeof (r as RiskReason).code === 'string')
+      .map((r) => ({ code: r.code, text: typeof r.text === 'string' ? r.text : '' }))
+    : [];
+  return {
+    ...(typeof res.caseCode === 'string' && res.caseCode && { caseCode: res.caseCode }),
+    ...(reasons.length && { reasons }),
+  };
 }
 
 /**
@@ -256,6 +281,7 @@ export interface GuardTokenClaims {
   rid?: string; // requestId
   n?: string; // matching number
   oc?: string; // offline challenge id
+  cc?: string; // "Why?" case code, shown while waiting
   exp: number; // ms
 }
 

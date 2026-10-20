@@ -11,6 +11,8 @@ import {
   LoginStatusResponse,
   WaitForApprovalOptions,
   WaitForApprovalResult,
+  VerifyOptions,
+  VerifyChallenge,
 } from '../types';
 import { TouchQueTimeoutError, TouchQueRejectedError, TouchQuePasskeyRequiredError } from '../errors';
 
@@ -72,6 +74,7 @@ export class Login {
       ...(options.requireBiometric && { requireBiometric: options.requireBiometric }),
       ...(options.requireNumberMatch && { requireNumberMatch: options.requireNumberMatch }),
       ...(options.browserProof && { browserProof: options.browserProof }),
+      ...(options.context && { context: options.context }),
     });
   }
 
@@ -173,25 +176,51 @@ export class Login {
    * @throws {TouchQuePasskeyRequiredError} A passkey must approve it (policy, or the
    *   user tapped Approve during a call)
    *
+   * With number matching (your `requireNumberMatch`, a workspace policy or
+   * the risk engine can turn it on), the user must pick a number on the
+   * phone: show `challengeCode` to the user from `onChallenge`, which runs
+   * before verify() waits. Otherwise the user has to guess.
+   *
    * @example
-   * // Protect an action with 2FA — ONE LINE!
    * const result = await tq.login.verify({
    *   externalUsername: 'user@company.com',
-   *   type: 'action_type_slug_or_id',
-   *   referenceId: 'action_789'
+   *   type: 'SEND_MONEY',
+   *   referenceId: 'order_789',
+   *   onChallenge: ({ challengeCode }) => {
+   *     if (challengeCode) showOnScreen(`Pick ${challengeCode} on your phone`);
+   *   },
    * });
-   * // If we reach here, user approved ✅
+   * // If we reach here, the user approved
    * executeAction();
    */
   async verify(
-    options: LoginRequestOptions & { timeout?: number; pollInterval?: number }
+    options: VerifyOptions
   ): Promise<WaitForApprovalResult & { requestId: string; challengeCode?: string }> {
-    const { timeout, pollInterval, ...requestOptions } = options;
+    const { timeout, pollInterval, onChallenge, ...requestOptions } = options;
 
     // Step 1: Send the 2FA request
     const loginReq = await this.request(requestOptions);
     // Passkey-only (phishing-resistant policy): nothing was pushed, so don't poll for 30 s.
     if (loginReq.requiresPasskey) throw new TouchQuePasskeyRequiredError(loginReq.requestId);
+
+    // Step 1b: the number to show, before waiting (the phone asks for it).
+    if (onChallenge) {
+      const challenge: VerifyChallenge = {
+        requestId: loginReq.requestId,
+        expiresAt: loginReq.expiresAt,
+        ...(loginReq.challengeCode && { challengeCode: loginReq.challengeCode }),
+        ...(loginReq.reasons && { reasons: loginReq.reasons }),
+        ...(loginReq.caseCode && { caseCode: loginReq.caseCode }),
+      };
+      try {
+        const out = onChallenge(challenge) as Promise<unknown> | undefined;
+        if (out && typeof out.catch === 'function') {
+          out.catch((err: unknown) => console.warn('[TouchQue] onChallenge failed:', err instanceof Error ? err.message : err));
+        }
+      } catch (err) {
+        console.warn('[TouchQue] onChallenge failed:', err instanceof Error ? err.message : err);
+      }
+    }
 
     // Step 2: Wait for the user's response
     const result = await this.waitForApproval({

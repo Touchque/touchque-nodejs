@@ -31,14 +31,19 @@ export function parseRiskCheck(raw: unknown): RiskCheckResult {
   const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const reasons: RiskReason[] = Array.isArray(body.reasons)
     ? body.reasons
-      .filter((r): r is { code: string; text?: unknown } => Boolean(r) && typeof (r as { code?: unknown }).code === 'string')
-      .map((r) => ({ code: r.code, text: typeof r.text === 'string' ? r.text : '' }))
+      .filter((r): r is { code: string; text?: unknown; action?: unknown } => Boolean(r) && typeof (r as { code?: unknown }).code === 'string')
+      .map((r) => ({
+        code: r.code,
+        text: typeof r.text === 'string' ? r.text : '',
+        ...(typeof r.action === 'string' && { action: r.action }),
+      }))
     : [];
   return {
     prompt: body.prompt !== false,
     reasons,
     assurance: typeof body.assurance === 'string' && ASSURANCE.has(body.assurance) ? (body.assurance as RiskCheckResult['assurance']) : 'normal',
     silentMode: body.silentMode === 'shadow' ? 'shadow' : 'enforce',
+    ...(typeof body.caseCode === 'string' && { caseCode: body.caseCode }),
   };
 }
 
@@ -64,6 +69,7 @@ export class Risk {
       ...(options.userAgent && { userAgent: options.userAgent }),
       ...(options.browserProof && { browserProof: options.browserProof }),
       ...(options.maxAgeSeconds !== undefined && { maxAgeSeconds: options.maxAgeSeconds }),
+      ...(options.context && { context: options.context }),
     });
     return parseRiskCheck(raw);
   }

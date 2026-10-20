@@ -208,6 +208,14 @@ describe('touchqueRouter — passkeys', () => {
     expect(res.body.attemptId).toBe('att_1');
   });
 
+  test('POST /passkey/authenticate/options with no email asks for options for any passkey (autofill)', async () => {
+    const tq = fakeTq();
+    const app = appWithRouter(tq);
+    const res = await request(app).post('/touchque/passkey/authenticate/options').send({});
+    expect(res.status).toBe(200);
+    expect(tq.webauthn.primaryOptions).toHaveBeenCalledWith({});
+  });
+
   test('POST /passkey/authenticate/verify calls onAuthenticated on success', async () => {
     const onAuthenticated = vi.fn();
     const app = appWithRouter(fakeTq(), { onAuthenticated });

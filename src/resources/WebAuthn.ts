@@ -63,8 +63,13 @@ export interface WebAuthnAuthenticateVerifyResponse {
 }
 
 export interface WebAuthnPrimaryOptionsRequest {
-  /** The account to authenticate (username-first passwordless-primary login). */
-  externalUsername: string;
+  /**
+   * The account to authenticate (username-first passwordless-primary login).
+   * Leave it out for options that accept any passkey of your site (empty
+   * `allowCredentials`): passkey autofill (WebAuthn conditional mediation),
+   * where nobody has typed an email yet. The assertion then names the user.
+   */
+  externalUsername?: string;
 }
 
 export interface WebAuthnPrimaryOptionsResponse {
@@ -176,14 +181,20 @@ export class WebAuthn {
    * Returns `404 no_passkey_registered` if the user has no passkey — the
    * caller should then fall back to password login.
    *
+   * Without `externalUsername` the options accept any passkey of your site
+   * (for passkey autofill, `@touchque/web`'s `passkeys.autofill()`), and
+   * `primaryVerify` names the user the passkey belongs to.
+   *
    * @example
    * const { attemptId, options } = await tq.webauthn.primaryOptions({ externalUsername: 'user@company.com' });
    * // browser: const assertion = await navigator.credentials.get({ publicKey: options });
+   * const forAutofill = await tq.webauthn.primaryOptions();
    */
-  async primaryOptions(options: WebAuthnPrimaryOptionsRequest): Promise<WebAuthnPrimaryOptionsResponse> {
-    return this.http.post<WebAuthnPrimaryOptionsResponse>('/webauthn/authenticate/primary/options', {
-      externalUsername: options.externalUsername,
-    });
+  async primaryOptions(options: WebAuthnPrimaryOptionsRequest = {}): Promise<WebAuthnPrimaryOptionsResponse> {
+    return this.http.post<WebAuthnPrimaryOptionsResponse>(
+      '/webauthn/authenticate/primary/options',
+      options.externalUsername ? { externalUsername: options.externalUsername } : {},
+    );
   }
 
   /**

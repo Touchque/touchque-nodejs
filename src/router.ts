@@ -19,7 +19,7 @@
 //   POST   /offline/challenge               (pre-auth, body.externalUsername) -> QR for a phone with no internet
 //   POST   /offline/verify                  (pre-auth, body.challengeId/code)
 //   POST   /offline/totp                    (pre-auth, body.externalUsername/code) -> time-based code fallback
-//   POST   /passkey/authenticate/options    (pre-auth, body.externalUsername)
+//   POST   /passkey/authenticate/options    (pre-auth, body.email; none = any passkey, for autofill)
 //   POST   /passkey/authenticate/verify     (pre-auth, body.attemptId/response)
 //   POST   /passkey/login/options           (pre-auth, body.requestId — approve a pending 2FA request)
 //   POST   /passkey/login/verify            (pre-auth, body.requestId/response[/externalUsername])
@@ -410,12 +410,13 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
     }
   });
 
-  // ── Passkey: passwordless sign-in (pre-auth — identity is the typed email) ──
+  // ── Passkey: passwordless sign-in (pre-auth — identity is the typed email,
+  //    or, with no email, the passkey the user picks from autofill) ──
   router.post('/passkey/authenticate/options', async (req, res) => {
     const email = String(req.body?.email || '').toLowerCase();
     if (!allow(req, res, 'passkey-options', email || undefined)) return;
     try {
-      res.json(await tq.webauthn.primaryOptions({ externalUsername: email }));
+      res.json(await tq.webauthn.primaryOptions(email ? { externalUsername: email } : {}));
     } catch (error) {
       sendRelayError(res, error);
     }

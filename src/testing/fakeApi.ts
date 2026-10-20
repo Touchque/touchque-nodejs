@@ -74,6 +74,8 @@ const REASON_TEXT: Record<string, string> = {
   no_browser_key: 'No device-bound browser key was presented',
   new_browser: 'This browser has not been approved on the phone for this account',
   critical_action: 'The action is critical',
+  passkey_required: 'The workspace requires a passkey for this action',
+  number_match_requested: 'The risk check asked for number matching',
   phone_not_linked: 'No phone is linked to this account',
 };
 const reasons = (...codes: string[]) => codes.map((code) => ({ code, text: REASON_TEXT[code] }));
@@ -112,13 +114,14 @@ export async function startFakeApi(): Promise<FakeApi> {
   app.post('/login/request', (req, res) => {
     const { externalUsername: user, type, referenceId = null, details } = req.body;
     if (!api.linked.has(user)) return res.status(404).json({ code: 'device_not_linked', error: 'No linked device found for this user' });
-    if (api.opts.frozen) return res.status(423).json({ code: 'frozen', error: 'frozen', retryAfter: 900 });
-    if (api.opts.rateLimited) return res.status(429).json({ code: 'rate_limited', error: 'too_many_login_requests', retryAfter: 60 });
+    // "Why?": every decision names a case code (refusals: REF-USE, pushes: K7P-2QX).
+    if (api.opts.frozen) return res.status(423).json({ code: 'frozen', error: 'frozen', retryAfter: 900, caseCode: 'REF-USE' });
+    if (api.opts.rateLimited) return res.status(429).json({ code: 'rate_limited', error: 'too_many_login_requests', retryAfter: 60, caseCode: 'REF-USE' });
     const action = api.actions.get(type);
     if (!action) return res.status(400).json({ code: 'unknown_action', error: `Invalid action type: ${type}` });
-    if (api.opts.blocked) return res.status(403).json({ code: 'blocked', reason: api.opts.blocked, error: 'blocked' });
+    if (api.opts.blocked) return res.status(403).json({ code: 'blocked', reason: api.opts.blocked, error: 'blocked', caseCode: 'REF-USE' });
     if (action.critical && api.requests.some((x) => x.user === user && x.status === 'CONFIRMED' && x.provisional && !x.reconfirmedAt && !x.revokedAt)) {
-      return res.status(403).json({ code: 'blocked', reason: 'provisional', error: 'blocked' });
+      return res.status(403).json({ code: 'blocked', reason: 'provisional', error: 'blocked', caseCode: 'REF-USE' });
     }
     const r: FakeRequest = {
       id: `00000000-0000-4000-8000-${String(++seq).padStart(12, '0')}`, user, type, referenceId, details: toPairs(details),
@@ -128,8 +131,10 @@ export async function startFakeApi(): Promise<FakeApi> {
       browserProof: req.body.browserProof || undefined,
     };
     api.requests.push(r);
+    const why = [...(r.requiresPasskey ? ['passkey_required'] : []), ...(action.critical ? ['critical_action'] : []), ...(api.opts.numberMatch ? ['number_match_requested'] : [])];
     res.json({
       message: 'Request sent', requestId: r.id, challengeCode: r.challengeCode, expiresAt: new Date(Date.now() + 30000).toISOString(), requiresPasskey: r.requiresPasskey,
+      caseCode: 'K7P-2QX', ...(why.length && { reasons: reasons(...why) }),
       ...(api.opts.telemetry && { telemetryToken: 'tt_test' }),
       ...(api.opts.canary && { canary: { url: `http://127.0.0.1:1/c/canary-${r.id}.gif` } }),
     });
@@ -169,12 +174,13 @@ export async function startFakeApi(): Promise<FakeApi> {
     api.lastCheck = b;
     if (typeof b.externalUsername !== 'string' || !b.externalUsername) return res.status(400).json({ code: 'invalid_request', error: 'externalUsername is required' });
     if (api.opts.rateLimited) return res.status(429).json({ code: 'rate_limited', error: 'too_many_login_requests', retryAfter: 60 });
-    const ask = (assurance: string, ...codes: string[]) => res.json({ prompt: true, reasons: reasons(...codes), assurance, silentMode: 'enforce' });
+    const ask = (assurance: string, ...codes: string[]) => res.json({ prompt: true, reasons: reasons(...codes), assurance, silentMode: 'enforce', caseCode: 'CHK-2QX' });
     if (!api.linked.has(b.externalUsername)) return ask('normal', 'phone_not_linked');
     if (api.actions.get(b.type || 'LOGIN')?.critical) return ask('normal', 'critical_action');
     if (api.opts.silent) {
       return res.json({
         prompt: false, reasons: reasons('known_browser', 'recent_approval', 'same_phone', 'familiar_network', 'no_risk_signal'), assurance: 'high', silentMode: 'enforce',
+        caseCode: 'CHK-2QX',
       });
     }
     return ask('normal', b.browserProof ? 'new_browser' : 'no_browser_key');

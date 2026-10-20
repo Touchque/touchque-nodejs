@@ -229,12 +229,26 @@ export interface LoginRequestOptions {
    * only means "a browser TouchQue does not know".
    */
   browserProof?: string;
+  /**
+   * For your TouchQue Actions only (`event.context`): roles, plan, amount…
+   * Any JSON object up to 4 KB. Never shown on the phone.
+   */
+  context?: Record<string, unknown>;
 }
 
 export interface LoginRequestResponse {
   requestId: string;
   /** Challenge code for number matching UI (if enabled for this integration) */
   challengeCode?: string;
+  /**
+   * "Why?" case code of this decision (`K7P-2QX`). Show it to the user ("Tell
+   * your support team: K7P-2QX"); your team opens the whole decision (each
+   * check, the rule that matched, what would have let it through) by this code
+   * in the dashboard (Logs → Look up a case).
+   */
+  caseCode?: string;
+  /** Why number matching or a passkey is needed (a fixed list, never a score); absent for a plain push. */
+  reasons?: RiskReason[];
   message: string;
   expiresAt: string;
   /**
@@ -311,6 +325,37 @@ export interface WaitForApprovalOptions {
   pollInterval?: number;
 }
 
+/**
+ * What `login.verify()` hands `onChallenge` as soon as the request exists,
+ * before it waits: show `challengeCode` to the user now; the phone asks for it.
+ */
+export interface VerifyChallenge {
+  requestId: string;
+  /** The number to show when number matching is on (absent otherwise). */
+  challengeCode?: string;
+  expiresAt: string;
+  /** Why number matching is needed (absent for a plain push). */
+  reasons?: RiskReason[];
+  /** The "Why?" case code of this decision. */
+  caseCode?: string;
+}
+
+/** Options of `login.verify()` on top of the request's own. */
+export interface VerifyOptions extends LoginRequestOptions {
+  /** How long to wait for the user, in ms (default 30 000). */
+  timeout?: number;
+  pollInterval?: number;
+  /**
+   * Called once, right after the request is created and before any waiting,
+   * with the number to show (number matching: the phone asks the user for
+   * it). Not called when only a passkey can approve (verify() then throws
+   * TouchQuePasskeyRequiredError at once). An error it throws, or a promise
+   * it returns that rejects, is logged and ignored: verify() keeps waiting.
+   * Its return value is otherwise ignored.
+   */
+  onChallenge?: (challenge: VerifyChallenge) => unknown;
+}
+
 export interface WaitForApprovalResult {
   approved: boolean;
   status: LoginStatus;
@@ -334,6 +379,8 @@ export interface RiskCheckOptions {
    * its own limit (7 days).
    */
   maxAgeSeconds?: number;
+  /** For your TouchQue Actions only (`event.context`). Any JSON object up to 4 KB. */
+  context?: Record<string, unknown>;
 }
 
 /** One reason behind a `risk.check` answer. Show `text` or translate `code`. */
@@ -346,11 +393,14 @@ export interface RiskReason {
    * `critical_action`, `sensitive_action`, `risk_signal`, `push_fatigue`,
    * `fraud_report`, `new_factor`, `vishing_shield`, `checks_incomplete`,
    * `silent_mode_shadow`, `phone_not_linked`, `frozen`, … New codes are added
-   * in minor versions.
+   * in minor versions. `action`: one of your TouchQue Actions asked
+   * (`text` is its reason, `action` its slug).
    */
   code: string;
   /** English text. */
   text: string;
+  /** With `code: 'action'`: the slug of the Action. */
+  action?: string;
 }
 
 export interface RiskCheckResult {
@@ -361,6 +411,13 @@ export interface RiskCheckResult {
    */
   prompt: boolean;
   reasons: RiskReason[];
+  /**
+   * "Why?" case code of this decision (`K7P-2QX`). Show it to the user ("Tell
+   * your support team: K7P-2QX"); your team opens the whole decision (each
+   * check, the rule that matched, what would have let it through) by this code
+   * in the dashboard (Logs → Look up a case).
+   */
+  caseCode?: string;
   /** How sure TouchQue is that this is the user (default `'normal'`). */
   assurance: 'high' | 'normal' | 'low';
   /**
@@ -401,6 +458,112 @@ export interface ForgetBrowsersOptions {
 
 export interface ForgetBrowsersResponse {
   forgotten: number;
+}
+
+// ─── Recovery Resource (Never Locked Out) ────────────────────────
+
+export type RecoveryStatus = 'AWAITING_DEVICE' | 'VOUCHING' | 'COOLING' | 'COMPLETED' | 'VETOED' | 'EXPIRED' | 'FAILED';
+
+export interface RecoveryVoucherEligibility {
+  externalUsername: string;
+  /** Can vouch today: a linked phone with a hardware key, not frozen, not on probation. */
+  eligible: boolean;
+  /** Why not: `no_phone`, `no_hardware_key`, `keys_lost`, `frozen`, `on_probation`, `same_phone`. */
+  reason?: string;
+}
+
+export interface RecoveryVouchersResponse {
+  externalUsername: string;
+  vouchers: RecoveryVoucherEligibility[];
+  updatedAt: string | null;
+  /** The user's own account is on probation after a vouch recovery until then. */
+  probationUntil: string | null;
+}
+
+export interface SetRecoveryVouchersOptions {
+  externalUsername: string;
+  /** Other users of your workspace; at most 5 are kept. Ask for the user's phone before you change it. */
+  vouchers: string[];
+}
+
+export interface StartRecoveryOptions {
+  externalUsername: string;
+  /** The user's IP address (the risk engine and the vouchers see it). */
+  clientIp?: string;
+  userAgent?: string;
+  /** How the vouchers know the user. */
+  displayName?: string;
+  /** Fill up a short named list, e.g. with the organization's admins. */
+  fallbackVouchers?: string[];
+  /** More vouchers than the floor of 2. */
+  required?: number;
+  /** A longer cooling-off than the floor of 15 minutes (default 60). */
+  coolOffMinutes?: number;
+  /** What the vouchers' phones show instead of the default English lines. */
+  details?: Array<{ label: string; value: string }>;
+  /** What the old phone shows (approve to move now, reject to stop) instead of the default English lines. */
+  noticeDetails?: Array<{ label: string; value: string }>;
+}
+
+export interface RecoveryVoucherState {
+  externalUsername: string;
+  source?: 'nominated' | 'fallback';
+  state: 'waiting' | 'pending' | 'approved' | 'expired' | 'unreachable';
+  /** The number this voucher must type, while their request is open. */
+  code: string | null;
+}
+
+export interface RecoveryReceipt {
+  seq: number;
+  at: string;
+  step: string;
+  actor: Record<string, unknown>;
+  data: Record<string, unknown>;
+  prev: string | null;
+  hash: string;
+}
+
+export interface RecoveryCase {
+  recoveryId: string;
+  externalUsername: string;
+  method: 'vouch' | 'old_phone' | 'transfer';
+  status: RecoveryStatus;
+  required: number;
+  approvals: number;
+  vouchers: RecoveryVoucherState[];
+  oldPhone: { notified: boolean; code: string | null };
+  coolOffMinutes: number;
+  coolOffUntil: string | null;
+  elevated: boolean;
+  reasons: string[];
+  location: string | null;
+  newPhoneBound: boolean;
+  expiresAt: string;
+  completedAt: string | null;
+  endedReason: string | null;
+  endedBy: string | null;
+  createdAt: string;
+  receipts: RecoveryReceipt[];
+}
+
+export interface RecoveryStarted extends RecoveryCase {
+  /** One-time; shown once. */
+  bindCode: string;
+  /** Show it as a QR: the TouchQue app on the new phone scans it. */
+  bindUri: string;
+}
+
+export interface VetoRecoveryOptions {
+  /** Who stopped it, e.g. the admin's e-mail (shown in the receipts). */
+  by?: string;
+  /** Default `partner_veto`. */
+  reason?: string;
+}
+
+export interface ListRecoveriesOptions {
+  externalUsername?: string;
+  /** Only running recoveries of the workspace. */
+  open?: boolean;
 }
 
 // ─── Webhook Resource ────────────────────────────────────────────
@@ -516,6 +679,8 @@ export interface ProtectOptions<TArgs extends any[]> {
   timeout?: number;
   /** Polling interval in ms */
   pollInterval?: number;
+  /** Show the number to the user as soon as the request exists (see `VerifyOptions.onChallenge`). */
+  onChallenge?: VerifyOptions['onChallenge'];
 }
 
 // ─── Errors ──────────────────────────────────────────────────────
@@ -530,4 +695,6 @@ export interface TouchQueErrorData {
   attemptsLeft?: number;
   /** Seconds to wait before retrying (429 / 423). */
   retryAfter?: number;
+  /** "Why?" case code of a refusal (`K7P-2QX`), to show the user. */
+  caseCode?: string;
 }

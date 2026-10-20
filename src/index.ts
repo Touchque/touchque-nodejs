@@ -16,7 +16,9 @@ import { Webhook } from './resources/Webhook';
 import { WebAuthn } from './resources/WebAuthn';
 import { Offline } from './resources/Offline';
 import { Actions } from './resources/Actions';
+import { ActionTypes } from './resources/ActionTypes';
 import { Risk } from './resources/Risk';
+import { Recovery } from './resources/Recovery';
 import { TouchQueConfig } from './types';
 import { TouchQueConfigError } from './errors';
 import { registerInternals } from './internal';
@@ -31,7 +33,9 @@ export * from './resources/Webhook';
 export * from './resources/WebAuthn';
 export * from './resources/Offline';
 export * from './resources/Actions';
+export * from './resources/ActionTypes';
 export * from './resources/Risk';
+export * from './resources/Recovery';
 export type { Step, StepState, StartOptions, Approval, CompleteExpectations } from './steps';
 
 export const DEFAULT_BASE_URL = 'https://api.touchque.com';
@@ -45,10 +49,14 @@ export class TouchQue {
   public readonly webauthn: WebAuthn;
   /** Offline Sign — QR challenge / typed code approvals that work with the phone offline */
   public readonly offline: Offline;
-  /** Action types (LOGIN, SEND_MONEY…) */
+  /** Action types: what users approve (LOGIN, SEND_MONEY…). Was `actions` before 4.0. */
+  public readonly actionTypes: ActionTypes;
+  /** TouchQue Actions: your own code in the approval pipeline (deploy, test, dry run, logs). */
   public readonly actions: Actions;
   /** Silent sign-ins: should this sign-in ask the phone, and which browsers TouchQue knows */
   public readonly risk: Risk;
+  /** Never Locked Out: move a user whose phone is gone to a new phone, with colleagues vouching */
+  public readonly recovery: Recovery;
 
   /**
    * @param config - Optional. Falls back to the environment:
@@ -76,8 +84,10 @@ export class TouchQue {
     this.webhook = new Webhook(resolved.apiSecret);
     this.webauthn = new WebAuthn(http);
     this.offline = new Offline(http);
+    this.actionTypes = new ActionTypes(http);
     this.actions = new Actions(http);
     this.risk = new Risk(http);
+    this.recovery = new Recovery(http);
     registerInternals(this, { apiSecret: resolved.apiSecret, resources: { http, auth: this.auth, login: this.login, offline: this.offline, risk: this.risk } });
   }
 
@@ -116,7 +126,9 @@ export class TouchQue {
    * @example
    * const secureWithdraw = tq.protect(processWithdraw, {
    *   type: 'WITHDRAW',
-   *   getUserIdentifier: (username, amount) => username
+   *   getUserIdentifier: (username, amount) => username,
+   *   // Number matching: show challengeCode to the user now; the phone asks for it.
+   *   onChallenge: ({ challengeCode }) => { if (challengeCode) notifyUser(`Pick ${challengeCode} on your phone`); },
    * });
    * 
    * await secureWithdraw("user@company.com", 500); // Prompts 2FA automatically
@@ -137,7 +149,8 @@ export class TouchQue {
         referenceId,
         ...context,
         timeout: options.timeout,
-        pollInterval: options.pollInterval
+        pollInterval: options.pollInterval,
+        onChallenge: options.onChallenge,
       });
       
       // If we reach here, it was approved. Call the original function.
@@ -184,6 +197,8 @@ export type {
   LoginStatusResponse,
   WaitForApprovalOptions,
   WaitForApprovalResult,
+  VerifyOptions,
+  VerifyChallenge,
   VerifyWebhookOptions,
   WebhookPayload,
   ProtectOptions,
@@ -195,6 +210,17 @@ export type {
   RiskBrowsersResponse,
   ForgetBrowsersOptions,
   ForgetBrowsersResponse,
+  RecoveryStatus,
+  RecoveryCase,
+  RecoveryVoucherEligibility,
+  RecoveryVouchersResponse,
+  SetRecoveryVouchersOptions,
+  StartRecoveryOptions,
+  RecoveryVoucherState,
+  RecoveryReceipt,
+  RecoveryStarted,
+  VetoRecoveryOptions,
+  ListRecoveriesOptions,
 } from './types';
 
 import { resources as internalResources } from './internal';

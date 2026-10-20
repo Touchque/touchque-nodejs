@@ -23,6 +23,8 @@ export interface WithTouchQueOptions {
   /** What the phone shows and the approval is bound to. Build it from server-side state. */
   details?: (req: Request) => MaybePromise<LoginRequestDetails | undefined>;
   referenceId?: (req: Request) => MaybePromise<string | undefined>;
+  /** For your TouchQue Actions only (`event.context`): roles, plan, amount… Never shown on the phone. */
+  context?: (req: Request) => MaybePromise<Record<string, unknown> | undefined>;
   /**
    * End user's IP. Default: none, unless `trustedProxyHops` is set. Use a
    * preset such as `ipFromVercel` / `ipFromCloudflare`, or your own function
@@ -70,10 +72,11 @@ export function withTouchQue<Ctx = unknown>(
 ): (req: Request, ctx?: Ctx) => Promise<Response> {
   return async (req: Request, ctx?: Ctx): Promise<Response> => {
     const client = options.client || getDefaultClient();
-    const [user, details, referenceId] = await Promise.all([
+    const [user, details, referenceId, context] = await Promise.all([
       options.user(req),
       options.details ? options.details(req) : undefined,
       options.referenceId ? options.referenceId(req) : undefined,
+      options.context ? options.context(req) : undefined,
     ]);
     const ip = options.ip ? options.ip(req) : forwardedFor(req, options.trustedProxyHops ?? 0);
     const result = await runGuard(client, {
@@ -81,6 +84,7 @@ export function withTouchQue<Ctx = unknown>(
       action,
       details,
       referenceId: referenceId ?? undefined,
+      context: context ?? undefined,
       ip,
       userAgent: req.headers.get('user-agent') ?? undefined,
       ...guardInputFromHeaders((name) => req.headers.get(name)),

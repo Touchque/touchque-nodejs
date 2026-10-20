@@ -3,6 +3,86 @@
 All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.0.0] — 2026-10-20 — TouchQue Actions
+
+> 3.6.0 (Never Locked Out) and 3.7.0 ("Why?" case codes) below were not published on their own; they ship in 4.0.0.
+
+### Breaking
+- **Action types moved to `tq.actionTypes`** (`define`, `list`; class `ActionTypes`). `tq.actions` is now
+  TouchQue Actions. Replace `tq.actions.define(...)` with `tq.actionTypes.define(...)`.
+
+### Added
+- **TouchQue Actions** (`tq.actions`): your own code at points of the approval pipeline, run by TouchQue in a
+  sandbox. See [ACTIONS.md](../ACTIONS.md).
+  - `deploy(slug, { trigger, code | handler | template, secrets, allowedHosts, capabilities, onFailure, order,
+    enabled, activate })` (idempotent; a version asking for a loosening capability returns
+    `approval.required` and waits for an admin's phone approval), `list`, `get`, `version`, `update`,
+    `delete`, `rollback(slug, version?)`.
+  - `handler`: deploy a self-contained typed function as `onExecute` (`handlerToCode`).
+  - Developer loop: `test({ … , eventId | event })` (one run, nothing sent), `dryRun({ …, replaces, limit,
+    since })` (replay against recent real decisions: `changed`, `transitions`, errors, timing), `events`,
+    `logs`, `metrics`.
+  - `triggers()`, `templates()`, `renderTemplate(id, trigger, params)`; `secrets.set | list | delete`.
+  - Types for writing Actions: `LoginRequestEvent`, `RiskCheckEvent`, `ApprovalDecidedEvent`, `FactEvent`,
+    `LoginRequestApi`, `RiskCheckApi`, `ActionApi`, `ActionHandler`.
+- `context` on `login.request`, `risk.check`, `start` and the guards (`requireTouchQue`, `withTouchQue`,
+  `runGuard`: `context: (req) => ({ roles, amount })`): for your Actions only (`event.context`), never shown on
+  the phone.
+- **`onChallenge` on `login.verify()`** (and `tq.protect()`): with number matching the phone asks for a number
+  that `verify()` used to return only after the approval. `onChallenge` runs once, right after the request is
+  created and before the wait, with `{ requestId, challengeCode?, expiresAt, reasons?, caseCode? }` (type
+  `VerifyChallenge`; options type `VerifyOptions`). Show `challengeCode` to the user now; the phone asks for it.
+  Not called when only a passkey can approve. An error it throws, or a promise it returns that rejects, is logged
+  and ignored: `verify()` keeps waiting.
+- `RiskReason.action`: with `code: 'action'`, the slug of the Action that asked.
+- `HttpClient.put` / `patch`.
+- **Passkey autofill** (WebAuthn conditional mediation): `webauthn.primaryOptions()` without
+  `externalUsername` asks for options that accept any passkey of your site (empty `allowCredentials`), and
+  `primaryVerify` names the user the passkey belongs to. `touchqueRouter`'s `POST /passkey/authenticate/options`
+  does the same when the body has no `email`, so `@touchque/web`'s `passkeys.autofill()` works with no extra
+  route. Needs the API that answers usernameless options (authenticator 2026-10-20).
+
+## [3.7.0] — 2026-10-19 — "Why?" case codes
+
+### Added
+- **Case codes.** Every approval decision TouchQue makes (`login.request`, `risk.check`) now names a short case
+  code (`K7P-2QX`: 6 characters without I, O, 0 or 1). Show it to your user ("Tell your support team: K7P-2QX");
+  your team opens the whole decision by that code in the dashboard (Logs → Look up a case): each check, the rule
+  that matched, the signals the risk engine acted on and the ones it only measured, and the single change that
+  would have let it through.
+  - `LoginRequestResponse.caseCode` and `reasons` (why number matching or a passkey is needed: a fixed list of
+    plain English reasons, never a score).
+  - `RiskCheckResult.caseCode`.
+  - `TouchQueAPIError.caseCode` on refusals (blocked, frozen, rate limited, provisional, keys lost).
+  - Steps (`tq.start`, `requireTouchQue`, `withTouchQue`, `touchqueRouter`) carry `caseCode` and `reasons`; the
+    guard keeps showing the code while it waits. Both are safe to send to the browser.
+- The fake API (`startFakeApi`) answers with case codes (`K7P-2QX` for a push, `REF-USE` for a refusal,
+  `CHK-2QX` for a check).
+
+## [3.6.0] — 2026-10-19 — Never Locked Out
+
+### Added
+- **Never Locked Out.** A user whose phone is lost, dead or replaced moves to a new phone without a help desk:
+  colleagues they named vouch on their own phones, then a cooling-off anyone can veto.
+  - `tq.recovery.setVouchers({ externalUsername, vouchers })` and `tq.recovery.vouchers({ externalUsername })`
+    (who can vouch today and why not). Ask for the user's phone before you change the list.
+  - `tq.recovery.start({ externalUsername, clientIp?, userAgent?, displayName?, fallbackVouchers?, required?,
+    coolOffMinutes?, details? })` → `RecoveryStarted` with `bindUri` (show it as a QR for the new phone);
+    `tq.recovery.status(id)` (each voucher's `code` while it can be used, the receipt chain), `tq.recovery.list({
+    externalUsername } | { open: true })`, `tq.recovery.veto(id, { by?, reason? })`, `isRecoveryOpen`.
+  Only after your first factor (password, IdP). The risk engine's BLOCK refuses; hard signals add a voucher and
+  double the cooling-off. Errors carry `code`: `not_enough_vouchers` (with `required`, `eligible`, `vouchers`),
+  `recovery_in_progress`, `blocked`, `frozen`, `rate_limited`, `device_not_linked`. After a vouch move, critical
+  actions answer 403 `blocked` / `recovery_probation` for 24 h. New webhook events `RECOVERY_STARTED`,
+  `RECOVERY_DEVICE_BOUND`, `RECOVERY_COOLING`, `RECOVERY_COMPLETED`, `RECOVERY_VETOED`, `RECOVERY_EXPIRED`,
+  `RECOVERY_FAILED`; `DEVICE_LINKED` can carry `via: 'recovery'`.
+- `details` / `noticeDetails` on start: what the vouchers' phones and the old phone show, in your words (default
+  English lines otherwise).
+- Approval requests on the phone carry `expiresAt` (a vouch stays open for 10 minutes).
+
+### Changed
+- Phone-to-phone transfers must be signed by a phone with a hardware key (the apps do since this release) and move
+  only the accounts the phone chose.
 ## [3.5.0] — 2026-10-18 — Silent sign-ins
 
 ### Added

@@ -155,7 +155,7 @@ describe('requireTouchQue — one line, full flow', () => {
     api.opts.blocked = 'geo_policy';
     const blocked = await send(app, { amount: 1 });
     expect(blocked.status).toBe(403);
-    expect(blocked.body.touchque).toEqual({ state: 'blocked', reason: 'geo_policy' });
+    expect(blocked.body.touchque).toEqual({ state: 'blocked', reason: 'geo_policy', caseCode: 'REF-USE' });
   });
 
   test('an undefined action is a clear configuration error, not a user-facing message', async () => {
@@ -165,7 +165,7 @@ describe('requireTouchQue — one line, full flow', () => {
     const res = await send(app, { amount: 1 });
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('misconfigured');
-    expect(spy.mock.calls[0][0]).toContain("tq.actions.define('NOT_DEFINED')");
+    expect(spy.mock.calls[0][0]).toContain("tq.actionTypes.define('NOT_DEFINED')");
     spy.mockRestore();
   });
 

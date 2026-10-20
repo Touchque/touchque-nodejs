@@ -75,6 +75,8 @@ export interface GuardInput {
    * usual push starts.
    */
   silentSignIn?: boolean | SilentSignInOptions;
+  /** For your TouchQue Actions only (`event.context`). Never shown on the phone. */
+  context?: Record<string, unknown>;
 }
 
 export interface GuardBody {
@@ -108,7 +110,8 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
   const issue = (step: Step, extra: Partial<GuardTokenClaims> = {}): GuardResult => {
     if (details.length && !step.details && step.state !== 'blocked') step.details = details;
     const claims: GuardTokenClaims = {
-      ...base, st: step.state, rid: step.requestId, n: step.number, oc: step.offline?.challengeId, exp: Date.now() + TOKEN_TTL_MS, ...extra,
+      ...base, st: step.state, rid: step.requestId, n: step.number, oc: step.offline?.challengeId, exp: Date.now() + TOKEN_TTL_MS,
+      ...(step.caseCode && { cc: step.caseCode }), ...extra,
     };
     return { status: STATUS[step.state], body: { touchque: step, token: signGuardToken(secret, claims) } };
   };
@@ -197,7 +200,7 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
         return issue({ state: 'offline', offline: { challengeId: String(bound.oc) } }, { oc: bound.oc, rid: bound.rid, n: bound.n });
       }
       if (now.state === 'waiting' || now.state === 'passkey_required') {
-        return issue({ state: now.state, requestId: bound.rid, number: bound.n }, { n: bound.n });
+        return issue({ state: now.state, requestId: bound.rid, number: bound.n, ...(bound.cc && { caseCode: bound.cc }) }, { n: bound.n });
       }
       return issue({ state: now.state, requestId: bound.rid });
     }
@@ -206,12 +209,12 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
     const browserProof = typeof input.browserProof === 'string' && input.browserProof && input.browserProof.length <= MAX_BROWSER_PROOF
       ? input.browserProof : undefined;
     if (input.silentSignIn && browserProof) {
-      const silent = await silentApproval(r, { user, action, browserProof, ip: input.ip, userAgent: input.userAgent, silentSignIn: input.silentSignIn });
+      const silent = await silentApproval(r, { user, action, browserProof, ip: input.ip, userAgent: input.userAgent, silentSignIn: input.silentSignIn, context: input.context });
       if (silent) return { status: 200, approved: silent };
     }
     return issue(await start(r, action, {
       user, details: details.length ? details : undefined, referenceId: input.referenceId, ip: input.ip, userAgent: input.userAgent,
-      enroll: input.enroll, browserProof,
+      enroll: input.enroll, browserProof, context: input.context,
     }));
   } catch (err) {
     if (err instanceof TouchQueConfigError) {
@@ -232,12 +235,12 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
  */
 async function silentApproval(
   r: ReturnType<typeof resources>,
-  q: { user: string; action: string; browserProof: string; ip?: string; userAgent?: string; silentSignIn: true | SilentSignInOptions },
+  q: { user: string; action: string; browserProof: string; ip?: string; userAgent?: string; silentSignIn: true | SilentSignInOptions; context?: Record<string, unknown> },
 ): Promise<Approval | null> {
   try {
     const maxAgeSeconds = typeof q.silentSignIn === 'object' ? q.silentSignIn.maxAgeSeconds : undefined;
     const res = await r.risk.check({
-      externalUsername: q.user, type: q.action, clientIp: q.ip, userAgent: q.userAgent, browserProof: q.browserProof, maxAgeSeconds,
+      externalUsername: q.user, type: q.action, clientIp: q.ip, userAgent: q.userAgent, browserProof: q.browserProof, maxAgeSeconds, context: q.context,
     });
     if (res.prompt !== false) return null;
     return {

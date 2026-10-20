@@ -91,6 +91,18 @@ describe('WebAuthn resource', () => {
     expect(result.options).toEqual({ challenge: 'c' });
   });
 
+  test('primaryOptions() without a username asks for options that take any passkey (autofill)', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ attemptId: 'att_2', options: { challenge: 'c', allowCredentials: [] } });
+    const wa = new WebAuthn(http);
+
+    await wa.primaryOptions();
+    await wa.primaryOptions({ externalUsername: '' });
+
+    expect(http.post).toHaveBeenNthCalledWith(1, '/webauthn/authenticate/primary/options', {});
+    expect(http.post).toHaveBeenNthCalledWith(2, '/webauthn/authenticate/primary/options', {});
+  });
+
   test('primaryVerify() POSTs attemptId + response and surfaces a successful login', async () => {
     const http = fakeHttp();
     (http.post as any).mockResolvedValue({ success: true, requestId: 'lr_1', externalUsername: 'a@b.com', riskScore: 0.4 });

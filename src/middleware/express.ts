@@ -30,6 +30,8 @@ export interface TouchQueMiddlewareOptions {
   details?: (req: Request) => MaybePromise<LoginRequestDetails | undefined>;
   /** Your own transaction id, bound to the approval. */
   referenceId?: (req: Request) => MaybePromise<string | undefined>;
+  /** For your TouchQue Actions only (`event.context`): roles, plan, amount… Never shown on the phone. */
+  context?: (req: Request) => MaybePromise<Record<string, unknown> | undefined>;
   /** @deprecated use `user` */
   getUserId?: (req: Request) => string | undefined;
   /** @deprecated use `details` */
@@ -84,8 +86,9 @@ export function requireTouchQue(
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const client = explicitClient || getDefaultClient();
-      const [user, details, referenceId] = await Promise.all([
+      const [user, details, referenceId, context] = await Promise.all([
         userOf(req), detailsOf ? detailsOf(req) : undefined, refOf ? refOf(req) : undefined,
+        options.context ? options.context(req) : undefined,
       ]);
       const header = (name: string) => req.get?.(name) ?? (req.headers?.[name] as string | undefined);
       const result = await runGuard(client, {
@@ -93,6 +96,7 @@ export function requireTouchQue(
         action,
         details,
         referenceId: referenceId ?? undefined,
+        context: context ?? undefined,
         ip: req.ip,
         userAgent: req.get?.('user-agent') ?? undefined,
         ...guardInputFromHeaders(header),

@@ -118,6 +118,24 @@ export class HttpClient {
     }
   }
 
+  async put<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+    return this.send<T>('PUT', path, body);
+  }
+
+  async patch<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+    return this.send<T>('PATCH', path, body);
+  }
+
+  private async send<T>(method: 'PUT' | 'PATCH', path: string, body: Record<string, unknown>): Promise<T> {
+    const bodyStr = JSON.stringify(body);
+    try {
+      const response = await this.client.request<T>({ method, url: path, data: bodyStr, headers: this.authHeaders(method, path, bodyStr) });
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
   async get<T>(path: string, params?: Record<string, string | number | boolean>): Promise<T> {
     const query = buildQuery(params);
     try {
@@ -164,6 +182,7 @@ export class HttpClient {
         retryAfter: typeof data.retryAfter === 'number'
           ? data.retryAfter
           : Number(axiosErr.response.headers?.['retry-after']) || undefined,
+        caseCode: typeof data.caseCode === 'string' ? data.caseCode : undefined,
       });
     }
     return new TouchQueAPIError(500, {

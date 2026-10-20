@@ -42,6 +42,11 @@ async function handleWithdraw(userId, amount, currency) {
       type: 'WITHDRAW',                     // action type (defined in the Dashboard)
       referenceId: `withdraw_${Date.now()}`, // your own transaction id
       timeout: 30000,                        // wait 30 seconds
+      // A critical action is number matched: show challengeCode to the user
+      // now; the phone asks for it. Runs once, before the wait.
+      onChallenge: ({ challengeCode }) => {
+        if (challengeCode) console.log(`Pick ${challengeCode} on your phone`);
+      },
     });
 
     // Reaching here means the user approved.
