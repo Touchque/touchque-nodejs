@@ -68,6 +68,9 @@ export class Risk {
       ...(options.clientIp && { clientIp: options.clientIp }),
       ...(options.userAgent && { userAgent: options.userAgent }),
       ...(options.browserProof && { browserProof: options.browserProof }),
+      ...(options.clientSignals && { clientSignals: options.clientSignals }),
+      ...(options.deviceRisk && { deviceRisk: options.deviceRisk }),
+      ...(options.deviceRiskRequestId && { deviceRiskRequestId: options.deviceRiskRequestId }),
       ...(options.maxAgeSeconds !== undefined && { maxAgeSeconds: options.maxAgeSeconds }),
       ...(options.context && { context: options.context }),
     });

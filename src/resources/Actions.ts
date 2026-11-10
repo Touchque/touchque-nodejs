@@ -21,6 +21,8 @@ import { TouchQueConfigError } from '../errors';
 export type ActionTrigger =
   | 'login.request'
   | 'risk.check'
+  /** Before an AI agent's request reaches the phone (POST /agents/approvals): deny, stepUp, requirePasskey only. */
+  | 'agent.approval'
   | 'approval.decided'
   | 'shield.decision'
   | 'fraud.reported'
@@ -29,7 +31,10 @@ export type ActionTrigger =
   | 'user.unlinked'
   | 'passkey.added'
   | 'passkey.removed'
-  | 'recovery.updated';
+  | 'recovery.updated'
+  | 'identity.pre_user_registration'
+  | 'identity.post_login'
+  | 'identity.post_user_registration';
 
 /** Loosening powers; each needs an admin's phone approval in the dashboard. */
 export type ActionCapability = 'skip_number_match' | 'override_block' | 'allow_silent';
@@ -105,7 +110,50 @@ export interface FactEvent extends ActionEventBase {
   details: Record<string, unknown>;
 }
 
-export type ActionEvent = LoginRequestEvent | RiskCheckEvent | ApprovalDecidedEvent | FactEvent;
+// TouchQue Login: the hosted sign-in for your own customers.
+export interface IdentityActionUser {
+  id: string | null;
+  email: string | null;
+  emailVerified?: boolean;
+  name: string | null;
+  loginsCount?: number;
+  createdAt?: string | null;
+  userMetadata?: Record<string, unknown>;
+  appMetadata?: Record<string, unknown>;
+}
+
+export interface IdentityActionApp { clientId: string; name: string; firstParty: boolean }
+
+export interface IdentityPreRegistrationEvent extends ActionEventBase {
+  trigger: 'identity.pre_user_registration';
+  user: IdentityActionUser;
+  app: IdentityActionApp | null;
+  /** 'password' (the sign-up page) or the social / enterprise connection's name. */
+  connection: string;
+  client: ActionClient;
+}
+
+export interface IdentityPostLoginEvent extends ActionEventBase {
+  trigger: 'identity.post_login';
+  user: IdentityActionUser;
+  /** null on the customers' own account page. */
+  app: IdentityActionApp | null;
+  organization: Record<string, unknown> | null;
+  /** amr so far (pwd, hwk, otp…) and how the first step was made. */
+  authentication: { methods: string[]; firstFactor: string | null };
+  client: ActionClient;
+}
+
+export interface IdentityPostRegistrationEvent extends ActionEventBase {
+  trigger: 'identity.post_user_registration';
+  user: IdentityActionUser;
+  app: IdentityActionApp | null;
+  /** 'password' (the sign-up page) or the social / enterprise connection's name. */
+  connection: string;
+  client: ActionClient;
+}
+
+export type ActionEvent = LoginRequestEvent | RiskCheckEvent | ApprovalDecidedEvent | IdentityPreRegistrationEvent | IdentityPostLoginEvent | IdentityPostRegistrationEvent | FactEvent;
 
 export interface ActionFetchResponse {
   status: number;
@@ -153,6 +201,23 @@ export interface LoginRequestApi extends ActionApi {
   skipNumberMatch(reason?: string): void;
   /** Needs the override_block capability. */
   overrideBlock(reason?: string): void;
+}
+
+export interface IdentityPreRegistrationApi extends ActionApi {
+  /** The sign-up is refused; the reason is shown on the page. */
+  deny(reason?: string): void;
+}
+
+export interface IdentityPostLoginApi extends ActionApi {
+  /** The app gets access_denied with the reason. */
+  deny(reason?: string): void;
+  /** The customer confirms with a second step (or sets one up) first. */
+  requireMfa(reason?: string): void;
+  /** Applied when the sign-in goes on. Names must be URLs you own (https://acme.com/plan); values are JSON, 2 KB at most. */
+  idToken: { setCustomClaim(name: string, value: unknown): void };
+  accessToken: { setCustomClaim(name: string, value: unknown): void };
+  /** Merged into the account (null removes a key); keys are letters, digits and _. At most 20 setter calls per run. */
+  user: { setAppMetadata(key: string, value: unknown): void; setUserMetadata(key: string, value: unknown): void };
 }
 
 export interface RiskCheckApi extends ActionApi {
@@ -248,7 +313,7 @@ export interface UpdateActionOptions {
 }
 
 export interface ActionCall {
-  kind: 'deny' | 'stepUp' | 'requirePasskey' | 'prompt' | 'skipNumberMatch' | 'overrideBlock' | 'allowSilent';
+  kind: 'deny' | 'stepUp' | 'requirePasskey' | 'requireMfa' | 'prompt' | 'skipNumberMatch' | 'overrideBlock' | 'allowSilent';
   reason: string;
 }
 

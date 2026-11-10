@@ -7,15 +7,21 @@
 // `offlineTotpEnabled`) the user can type the rolling time-based code instead
 // of scanning — lower assurance, never accepted for critical actions.
 
+import * as crypto from 'crypto';
 import { HttpClient } from '../core/HttpClient';
 import { TouchQueAPIError } from '../errors';
 import {
   OfflineChallengeOptions,
   OfflineChallengeResponse,
+  OfflineTotpVerifierUser,
+  OfflineTotpVerifiersOptions,
+  OfflineTotpVerifiersResult,
   OfflineTotpVerifyOptions,
   OfflineVerifyOptions,
   OfflineVerifyResult,
 } from '../types';
+
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 /** HTTP statuses that mean "not approved" rather than "something broke". */
 const NOT_APPROVED_STATUSES = [401, 403, 404, 409, 410, 423, 429];
@@ -82,6 +88,49 @@ export class Offline {
         ...(options.requestId && { requestId: options.requestId }),
       })
     );
+  }
+
+  /**
+   * For checking typed time-based codes while your server cannot reach
+   * TouchQue (an outage): salted, slow digests of each user's next codes,
+   * never a key. Check a typed code with `matchTotpVerifier()`. Requires the workspace policies `offlineTotpEnabled` and
+   * `outageVerifiersEnabled`. Fetch again every few minutes from the step you
+   * have: removed and frozen users fall out.
+   */
+  async totpVerifiers(options: OfflineTotpVerifiersOptions): Promise<OfflineTotpVerifiersResult> {
+    return this.http.post<OfflineTotpVerifiersResult>('/offline/totp/verifiers', {
+      externalUsernames: options.externalUsernames,
+      ...(options.fromStep !== undefined && { fromStep: options.fromStep }),
+      ...(options.steps !== undefined && { steps: options.steps }),
+    });
+  }
+
+  /**
+   * Checks a typed code against one user's verifiers from `totpVerifiers()`,
+   * without calling TouchQue. Returns the step the code belongs to (the
+   * current one or one either side), or null. Accept each step once: remember
+   * the step you accepted for the user and refuse codes for it or an older one.
+   */
+  matchTotpVerifier(
+    verifiers: OfflineTotpVerifiersResult,
+    user: OfflineTotpVerifierUser,
+    code: string,
+    at: Date = new Date(),
+  ): number | null {
+    const given = typeof code === 'string' ? code.toUpperCase().replace(/[\s-]/g, '') : '';
+    if (given.length !== 7 || [...given].some((c) => !CODE_ALPHABET.includes(c))) return null;
+    const now = Math.floor(at.getTime() / 1000 / verifiers.stepSeconds);
+    const salt = Buffer.from(user.salt, 'base64');
+    const digests = Buffer.from(user.digests, 'base64');
+    const L = verifiers.kdf.length;
+    for (const step of [now, now - 1, now + 1]) {
+      if (step < user.fromStep || step > verifiers.notAfterStep) continue;
+      const at = (step - user.fromStep) * 2 * L;
+      if (at + 2 * L > digests.length) continue;
+      const got = crypto.pbkdf2Sync(given, Buffer.concat([salt, Buffer.from(`:${step}`)]), verifiers.kdf.iterations, L, 'sha256');
+      if (crypto.timingSafeEqual(digests.subarray(at, at + L), got) || crypto.timingSafeEqual(digests.subarray(at + L, at + 2 * L), got)) return step;
+    }
+    return null;
   }
 
   private async notApprovedAsResult(call: () => Promise<OfflineVerifyResult>): Promise<OfflineVerifyResult> {

@@ -33,6 +33,17 @@ describe('Login resource', () => {
     });
   });
 
+  test('request() sends challengeDigits only as 2 or 3', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ requestId: 'req_1', message: 'ok', expiresAt: 't' });
+    const login = new Login(http);
+
+    await login.request({ externalUsername: 'a@b.com', type: 'LOGIN', requireNumberMatch: true, challengeDigits: 3 });
+    expect(http.post).toHaveBeenLastCalledWith('/login/request', { externalUsername: 'a@b.com', type: 'LOGIN', requireNumberMatch: true, challengeDigits: 3 });
+    await login.request({ externalUsername: 'a@b.com', type: 'LOGIN', challengeDigits: 4 as never });
+    expect(http.post).toHaveBeenLastCalledWith('/login/request', { externalUsername: 'a@b.com', type: 'LOGIN' });
+  });
+
   test('request() forwards transaction details for the approval screen', async () => {
     const http = fakeHttp();
     (http.post as any).mockResolvedValue({ requestId: 'req_1', message: 'ok', expiresAt: 't' });
@@ -179,5 +190,16 @@ describe('Login — phishing-resistant policy', () => {
     expect(err).toBeInstanceOf(TouchQuePasskeyRequiredError);
     expect(err).toMatchObject({ requestId: 'req_1', reason: 'step_up' });
     expect(http.get).toHaveBeenCalledTimes(2);
+  });
+
+  test('consume() POSTs to /login/:id/consume with an empty body', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ consumed: true, requestId: 'req/1', externalUsername: 'a@b.com', type: 'LOGIN' });
+    const login = new Login(http);
+
+    const res = await login.consume('req/1');
+
+    expect(http.post).toHaveBeenCalledWith('/login/req%2F1/consume', {});
+    expect(res).toMatchObject({ consumed: true, externalUsername: 'a@b.com' });
   });
 });

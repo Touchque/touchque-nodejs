@@ -79,6 +79,20 @@ describe('WebAuthn resource', () => {
     expect(result.success).toBe(true);
   });
 
+  test('primaryAvailability() GETs whether passkey sign-in is on', async () => {
+    const http = fakeHttp();
+    (http.get as any).mockResolvedValueOnce({ enabled: true, userVerification: 'required' });
+    const wa = new WebAuthn(http);
+
+    expect(await wa.primaryAvailability()).toEqual({ enabled: true, userVerification: 'required' });
+    expect(http.get).toHaveBeenCalledWith('/webauthn/authenticate/primary/availability');
+
+    (http.get as any).mockResolvedValueOnce({ enabled: false, userVerification: 'required' });
+    expect(await wa.primaryAvailability()).toEqual({ enabled: false, userVerification: null });
+    (http.get as any).mockResolvedValueOnce({});
+    expect(await wa.primaryAvailability()).toEqual({ enabled: false, userVerification: null });
+  });
+
   test('primaryOptions() POSTs externalUsername to /webauthn/authenticate/primary/options', async () => {
     const http = fakeHttp();
     (http.post as any).mockResolvedValue({ attemptId: 'att_1', options: { challenge: 'c' } });

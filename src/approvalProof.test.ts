@@ -19,7 +19,7 @@ function makeDevice() {
 }
 
 const details = { Amount: '1,250.00 USD', Recipient: 'Jane Doe' };
-// Pinned: must equal the backend's utils/deviceSecurity.js#detailsDigest and the iOS app's digest.
+// Pinned: must equal the backend's detailsDigest and the iOS app's digest.
 const DIGEST = '4d09a5ac01b443fffbfe91a648b4f1e9e2737f9908b0c305d3672c7cb8dfaa9d';
 const message = `touchque-approve:v2\nreq-1\nWITHDRAW\n47\n${DIGEST}`;
 

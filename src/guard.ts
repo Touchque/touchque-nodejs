@@ -23,6 +23,7 @@ import {
   start, check, complete, normalizeDetails, signGuardToken, verifyGuardToken,
 } from './steps';
 import { guardSecret, resources } from './internal';
+import { describeError } from './core/HttpClient';
 
 export const GUARD_HEADERS = {
   token: 'x-touchque-token',
@@ -218,11 +219,11 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
     }));
   } catch (err) {
     if (err instanceof TouchQueConfigError) {
-      console.error(`[TouchQue] ${err.message}`);
+      r.http.log.error(`[TouchQue] ${err.message}`);
       return { status: 500, body: { touchque: { state: 'blocked', reason: 'misconfigured' }, error: { code: 'misconfigured', message: 'Two-factor approval is not configured correctly.' } } };
     }
     if (!(err instanceof TouchQueNetworkError) && !(err instanceof TouchQueAPIError && err.status >= 500)) {
-      console.error('[TouchQue] approval failed:', err instanceof Error ? err.message : err);
+      r.http.log.error(`[TouchQue] approval failed: ${describeError(err)}`);
     }
     return { status: 503, body: { touchque: { state: 'blocked', reason: 'unavailable' }, error: { code: 'unavailable', message: 'Two-factor approval is temporarily unavailable.' } } };
   }

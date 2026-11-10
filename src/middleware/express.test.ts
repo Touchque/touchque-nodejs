@@ -3,6 +3,7 @@ import express from 'express';
 import request from 'supertest';
 import { requireTouchQue } from './express';
 import { startFakeApi, FakeApi } from '../testing/fakeApi';
+import { TouchQue } from '../index';
 
 let api: FakeApi;
 beforeEach(async () => { api = await startFakeApi(); });
@@ -158,15 +159,25 @@ describe('requireTouchQue — one line, full flow', () => {
     expect(blocked.body.touchque).toEqual({ state: 'blocked', reason: 'geo_policy', caseCode: 'REF-USE' });
   });
 
-  test('an undefined action is a clear configuration error, not a user-facing message', async () => {
+  test('an undefined action is a clear configuration error, not a user-facing message; logged only through the logger', async () => {
     api.linked.add('jane@acme.com');
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { app } = partnerApp('NOT_DEFINED');
-    const res = await send(app, { amount: 1 });
-    expect(res.status).toBe(500);
-    expect(res.body.error.code).toBe('misconfigured');
-    expect(spy.mock.calls[0][0]).toContain("tq.actionTypes.define('NOT_DEFINED')");
-    spy.mockRestore();
+    try {
+      const { app } = partnerApp('NOT_DEFINED');
+      const res = await send(app, { amount: 1 });
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('misconfigured');
+      expect(spy).not.toHaveBeenCalled(); // silent by default
+
+      const logger = { warn: vi.fn(), error: vi.fn() };
+      const client = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: api.url, logger });
+      const { app: logged } = partnerApp('NOT_DEFINED', { client });
+      expect((await send(logged, { amount: 1 })).status).toBe(500);
+      expect(logger.error.mock.calls[0][0]).toContain("tq.actionTypes.define('NOT_DEFINED')");
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test('offline: QR + typed code approves once; a wrong code keeps the challenge open', async () => {

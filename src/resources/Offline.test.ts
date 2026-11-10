@@ -35,6 +35,36 @@ describe('Offline resource', () => {
     expect(ch.challengeCode).toBe('47');
   });
 
+  test('totpVerifiers() POSTs the users and the window, omits unset ones', async () => {
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ stepSeconds: 30, fromStep: 10, steps: 2, notAfterStep: 11, kdf: { name: 'pbkdf2-sha256', iterations: 1000, length: 8 }, users: [] });
+    const offline = new Offline(http);
+    await offline.totpVerifiers({ externalUsernames: ['a@b.com'] });
+    expect(http.post).toHaveBeenCalledWith('/offline/totp/verifiers', { externalUsernames: ['a@b.com'] });
+    const r = await offline.totpVerifiers({ externalUsernames: ['a@b.com'], fromStep: 10, steps: 2 });
+    expect(http.post).toHaveBeenLastCalledWith('/offline/totp/verifiers', { externalUsernames: ['a@b.com'], fromStep: 10, steps: 2 });
+    expect(r.notAfterStep).toBe(11);
+  });
+
+  test('matchTotpVerifier() finds the step of a typed code, one step either side, offline', () => {
+    const crypto = require('crypto');
+    const salt = Buffer.alloc(16, 7);
+    const h = (code: string, step: number) => crypto.pbkdf2Sync(code, Buffer.concat([salt, Buffer.from(`:${step}`)]), 10, 4, 'sha256');
+    const from = 1000;
+    const parts: Buffer[] = [];
+    for (let s = from; s < from + 4; s++) parts.push(h(`AAAAAA${s - from + 2}`, s), h(`BBBBBB${s - from + 2}`, s));
+    const v = { stepSeconds: 30, fromStep: from, steps: 4, notAfterStep: from + 3, kdf: { name: 'pbkdf2-sha256' as const, iterations: 10, length: 4 }, users: [] };
+    const user = { externalUsername: 'a@b.com', fromStep: from, salt: salt.toString('base64'), digests: Buffer.concat(parts).toString('base64') };
+    const offline = new Offline(fakeHttp());
+    const at = new Date((from + 1) * 30000 + 5000);
+    expect(offline.matchTotpVerifier(v, user, 'aaa-aaa3', at)).toBe(from + 1);
+    expect(offline.matchTotpVerifier(v, user, 'BBBBBB2', at)).toBe(from);
+    expect(offline.matchTotpVerifier(v, user, 'AAAAAA4', at)).toBe(from + 2);
+    expect(offline.matchTotpVerifier(v, user, 'AAAAAA5', at)).toBeNull(); // two steps ahead
+    expect(offline.matchTotpVerifier(v, user, 'AAAAAA1', at)).toBeNull(); // 1 is not in the alphabet
+    expect(offline.matchTotpVerifier(v, user, 'AAAAAA3', new Date((from + 9) * 30000))).toBeNull(); // past notAfterStep
+  });
+
   test('verifyTotp() forwards requestId; a rejected request comes back as a not-approved result', async () => {
     const http = fakeHttp();
     const offline = new Offline(http);

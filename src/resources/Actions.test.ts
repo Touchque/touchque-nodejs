@@ -110,4 +110,27 @@ describe('actions helpers', () => {
     await tq.actionTypes.define('EXPORT_DATA', { name: 'Export data', critical: true });
     expect(await lastCall()).toMatchObject({ method: 'POST', path: '/action-types', body: { type: 'EXPORT_DATA', name: 'Export data', critical: true } });
   });
+
+  test('an action type asks Second Thought questions; null turns them off', async () => {
+    const t = await tq.actionTypes.define('PAYOUT', { name: 'Payout', secondThought: { questions: ['someone_guiding', 'safe_account'], locale: 'en' } });
+    expect(t.secondThought).toEqual({ questions: ['someone_guiding', 'safe_account'], locale: 'en' });
+    await tq.actionTypes.define('PAYOUT', { name: 'Payout' });
+    expect((await lastCall()).body).not.toHaveProperty('secondThought');
+    expect((await tq.actionTypes.list()).find((a) => a.type === 'PAYOUT')?.secondThought?.questions).toEqual(['someone_guiding', 'safe_account']);
+    await tq.actionTypes.define('PAYOUT', { name: 'Payout', secondThought: null });
+    expect((await lastCall()).body).toMatchObject({ secondThought: null });
+  });
+
+  test('a look-alike destination comes back flagged', async () => {
+    await fetch(`${base}/__test/link`, { method: 'POST', body: JSON.stringify({ user: 'payee@example.com' }) });
+    const r = await tq.login.request({
+      externalUsername: 'payee@example.com',
+      type: 'LOGIN',
+      destination: { kind: 'iban', value: 'TR33 0006 1005 1978 6000 0013 26', known: ['TR33 0006 1005 1978 6457 8413 26'] },
+      securityChanges: { mfa: new Date('2026-10-26T08:00:00Z'), password: 1761465600000 },
+      locale: 'en',
+    });
+    expect(r.destination).toEqual({ known: false, lookalike: [{ field: 'iban', reason: 'same_start_and_end', similarTo: 'TR33…1326' }] });
+    expect((await lastCall()).body).toMatchObject({ securityChanges: { mfa: '2026-10-26T08:00:00.000Z', password: 1761465600000 }, locale: 'en' });
+  });
 });

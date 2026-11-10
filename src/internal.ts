@@ -27,3 +27,7 @@ function get(client: object): Internals {
 
 export const guardSecret = (client: object): string => get(client).apiSecret;
 export const resources = (client: object): Internals['resources'] => get(client).resources;
+
+const NO_LOG = { warn: () => {}, error: () => {} };
+/** The client's log (silent unless the integrator passed a logger or debug), or a silent one for anything else. */
+export const logOf = (client: object): { warn(message: string): void; error(message: string): void } => store.get(client)?.resources.http.log ?? NO_LOG;

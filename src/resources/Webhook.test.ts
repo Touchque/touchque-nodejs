@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
 import * as crypto from 'crypto';
+import { inspect } from 'util';
 import { Webhook, MemoryWebhookReplayCache } from './Webhook';
 import { TouchQueWebhookSignatureError, TouchQueWebhookReplayError } from '../errors';
 
@@ -134,6 +135,32 @@ describe('Webhook.verify — matches the backend signing scheme', () => {
 
     expect(result.requestId).toBe('req_1');
     expect(result.context).toEqual({ z: 1, a: 2, inner: { y: true, x: false } });
+  });
+
+  // JSON.parse keeps a "__proto__" member as an own key; copying it into a
+  // plain object would call the prototype setter and leave it out of the
+  // signed string, so unsigned data would pass.
+  test('rejects a genuine delivery with a "__proto__" member added', () => {
+    const webhook = new Webhook(SECRET);
+    const { rawBody, signature } = serverWebhook(freshPayload());
+    const injected = rawBody.replace(/^\{/, '{"__proto__":{"isAdmin":true},');
+    expect(() => webhook.verify({ rawBody: injected, signature })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: injected })).toThrow(TouchQueWebhookSignatureError);
+  });
+
+  test('a login result types its status as SUCCESS or REJECTED', () => {
+    const result = new Webhook(SECRET).verify(serverWebhook(freshPayload()));
+    // A compile error (TS2367) while status was typed PENDING | CONFIRMED | REJECTED | EXPIRED.
+    expect(result.status === 'SUCCESS').toBe(true);
+  });
+
+  test('the API secret is not enumerable: console.log / JSON.stringify do not show it', () => {
+    const webhook = new Webhook(SECRET);
+    expect(JSON.stringify({ webhook })).not.toContain(SECRET);
+    expect(inspect(webhook, { depth: 5 })).not.toContain(SECRET);
+    expect(Object.keys(webhook)).not.toContain('apiSecret');
+    // Still used to verify.
+    expect(webhook.isValid(serverWebhook(freshPayload()))).toBe(true);
   });
 });
 

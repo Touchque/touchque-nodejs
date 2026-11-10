@@ -11,6 +11,16 @@ describe('FixedWindowLimiter', () => {
     expect(l.hit('k', 3, t + 10_001)).toBe(0); // new window
   });
 
+  test('is exported from the package with its defaults, for withTouchQue and hand-written relays', async () => {
+    const pkg = await import('./index');
+    expect(pkg.FixedWindowLimiter).toBe(FixedWindowLimiter);
+    const l = new pkg.FixedWindowLimiter();
+    expect([l.windowMs, l.perIp, l.perUser]).toEqual([60_000, 20, 5]);
+    const t = 5_000;
+    for (let i = 0; i < 5; i++) expect(l.hit('user|transfer|jane', l.perUser, t)).toBe(0);
+    expect(l.hit('user|transfer|jane', l.perUser, t)).toBe(60);
+  });
+
   test('memory stays bounded under a flood of distinct keys', () => {
     const l = new FixedWindowLimiter({ windowMs: 60_000 });
     for (let i = 0; i < 120_000; i++) l.hit(`k${i}`, 5, 1);

@@ -4,6 +4,13 @@
 // behind several instances, each keeps its own counters, which still caps abuse
 // per instance. Use your own shared limiter in front of the router if you need
 // one global budget, and set `rateLimit: false` here.
+//
+// Exported for your own routes too (withTouchQue, a hand-written relay): the
+// same limiter touchqueRouter and touchqueRelay use.
+//
+//   const limiter = new FixedWindowLimiter();            // 20 per IP, 5 per user, per minute
+//   const wait = Math.max(limiter.hit(`ip|transfer|${ip}`, limiter.perIp), limiter.hit(`user|transfer|${user}`, limiter.perUser));
+//   if (wait) return Response.json({ error: 'RATE_LIMITED', retryAfter: wait }, { status: 429, headers: { 'Retry-After': String(wait) } });
 
 export interface RateLimitOptions {
   /** Window length in ms. Default 60000. */

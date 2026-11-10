@@ -72,6 +72,14 @@ export interface WebAuthnPrimaryOptionsRequest {
   externalUsername?: string;
 }
 
+/** `primaryAvailability()`: whether passkey sign-in is on for your workspace. */
+export interface WebAuthnPrimaryAvailability {
+  /** On: show the passkey button and passkey autofill. Off: show neither. */
+  enabled: boolean;
+  /** What the options will ask of the authenticator; null when off. */
+  userVerification: 'required' | 'preferred' | null;
+}
+
 export interface WebAuthnPrimaryOptionsResponse {
   /** Opaque id tying the browser assertion back to this attempt. */
   attemptId: string;
@@ -170,6 +178,23 @@ export class WebAuthn {
       requestId: options.requestId,
       response: options.response,
     });
+  }
+
+  /**
+   * Whether passwordless-primary (passkey) sign-in is on for your workspace
+   * (`TenantPolicy.passwordlessLoginEnabled`). Ask before your sign-in page
+   * shows its passkey button and passkey autofill: when it is off,
+   * `primaryOptions` answers 403 `passwordless_login_disabled`. Read-only.
+   *
+   * @example
+   * const { enabled } = await tq.webauthn.primaryAvailability();
+   * res.render('sign-in', { showPasskey: enabled });
+   */
+  async primaryAvailability(): Promise<WebAuthnPrimaryAvailability> {
+    const raw = await this.http.get<Partial<WebAuthnPrimaryAvailability>>('/webauthn/authenticate/primary/availability');
+    const enabled = raw?.enabled === true;
+    const uv = raw?.userVerification;
+    return { enabled, userVerification: enabled && (uv === 'required' || uv === 'preferred') ? uv : null };
   }
 
   /**

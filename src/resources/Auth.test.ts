@@ -1,6 +1,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Auth } from './Auth';
 import type { HttpClient } from '../core/HttpClient';
+import type { DevicePosture } from '../types';
 
 function fakeHttp() {
   return { post: vi.fn(), get: vi.fn(), delete: vi.fn() } as unknown as HttpClient;
@@ -48,5 +49,25 @@ describe('Auth resource', () => {
 
     expect(http.get).toHaveBeenCalledWith('/users/a%20b%40company.com');
     expect(result).toEqual({ used: true, deviceId: 'dev_1' });
+  });
+
+  test('getUser() passes the linked phone\'s posture through as `device`', async () => {
+    const http = fakeHttp();
+    const device: DevicePosture = {
+      platform: 'ios', model: 'iPhone15,3', osVersion: '18.1', securityPatch: null, appVersion: '1.2.0', screenLock: true,
+      biometrics: 'face', jailbroken: false, compromised: false, hardwareKey: true, attestation: 'apple-appattest',
+      signed: true, reportedAt: '2026-10-25T10:00:00.000Z', lastSeenAt: '2026-10-25T10:05:00.000Z',
+      linkedAt: '2026-10-20T09:00:00.000Z', state: 'healthy', issues: [],
+    };
+    (http.get as any).mockResolvedValueOnce({ externalUsername: 'a@b.c', used: true, deviceId: 'dev_1', device });
+    (http.get as any).mockResolvedValueOnce({ externalUsername: 'd@e.f', used: false, deviceId: null, device: null });
+    const auth = new Auth(http);
+
+    const linked = await auth.getUser({ externalUsername: 'a@b.c' });
+    expect(linked.device).toEqual(device);
+    expect(linked.device?.state).toBe('healthy');
+
+    const pending = await auth.getUser({ externalUsername: 'd@e.f' });
+    expect(pending.device).toBeNull();
   });
 });

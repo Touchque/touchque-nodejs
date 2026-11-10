@@ -36,7 +36,9 @@ export class MemoryWebhookReplayCache implements WebhookReplayCache {
  */
 function canonicalize(payload: Record<string, unknown>): string {
   const { signature: _drop, ...rest } = payload;
-  const sorted: Record<string, unknown> = {};
+  // No prototype: a top-level "__proto__" member stays an own key (and so in
+  // the signed string) instead of hitting the setter and being dropped.
+  const sorted: Record<string, unknown> = Object.create(null);
   for (const key of Object.keys(rest).sort()) {
     sorted[key] = rest[key];
   }
@@ -48,6 +50,8 @@ export class Webhook {
 
   constructor(apiSecret: string) {
     this.apiSecret = apiSecret;
+    // console.log(tq) / JSON.stringify(tq) must not show the secret (tq.webhook holds it).
+    Object.defineProperty(this, 'apiSecret', { enumerable: false });
   }
 
   /**

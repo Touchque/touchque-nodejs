@@ -19,6 +19,13 @@ import { Actions } from './resources/Actions';
 import { ActionTypes } from './resources/ActionTypes';
 import { Risk } from './resources/Risk';
 import { Recovery } from './resources/Recovery';
+import { Assist } from './resources/Assist';
+import { Agents } from './resources/Agents';
+import { Identity } from './resources/Identity';
+import { Mobile } from './resources/Mobile';
+import { QrPairings } from './resources/QrPairings';
+import { DeviceRisk } from './resources/DeviceRisk';
+import { SafeGuard } from './resources/SafeGuard';
 import { TouchQueConfig } from './types';
 import { TouchQueConfigError } from './errors';
 import { registerInternals } from './internal';
@@ -36,6 +43,23 @@ export * from './resources/Actions';
 export * from './resources/ActionTypes';
 export * from './resources/Risk';
 export * from './resources/Recovery';
+export * from './resources/Assist';
+export * from './resources/Agents';
+export * from './resources/Identity';
+export * from './resources/Mobile';
+export * from './resources/QrPairings';
+export * from './resources/DeviceRisk';
+export * from './resources/SafeGuard';
+export * from './safeGuard';
+export * from './agent';
+// An agent's tool calls approved on the person's phone, in any agent framework.
+export * from './agentFrameworks';
+export * from './orgAgent';
+export * from './mcpAuth';
+export * from './crossAppAccess';
+export * from './securityEvents';
+export * from './agentCard';
+export * from './approvalToken';
 export type { Step, StepState, StartOptions, Approval, CompleteExpectations } from './steps';
 
 export const DEFAULT_BASE_URL = 'https://api.touchque.com';
@@ -57,6 +81,20 @@ export class TouchQue {
   public readonly risk: Risk;
   /** Never Locked Out: move a user whose phone is gone to a new phone, with colleagues vouching */
   public readonly recovery: Recovery;
+  /** Help desk: IT working on a person's account in the open, and checks on their phone before sensitive actions */
+  public readonly assist: Assist;
+  /** AI agents as identities of their own: register (public key), suspend, revoke, kill switch. The agent itself uses TouchQueAgent. */
+  public readonly agents: Agents;
+  /** TouchQue Login: your customers' accounts, roles, organizations, apps, connections (Management API). */
+  public readonly identity: Identity;
+  /** Mobile SDK: your own iOS/Android app approves for your users (enrollment tokens, devices, settings). */
+  public readonly mobile: Mobile;
+  /** Pairing a browser by QR code: the phone that scans it is the one asked to approve. */
+  public readonly qrPairings: QrPairings;
+  /** Device risk: the device on your sign-up, reset, sign-in or approval page (a paid add-on). */
+  public readonly deviceRisk: DeviceRisk;
+  /** Safe Guard: Safe transactions approved on the approver's phone, for TouchQueSafeGuard. */
+  public readonly safeGuard: SafeGuard;
 
   /**
    * @param config - Optional. Falls back to the environment:
@@ -73,6 +111,8 @@ export class TouchQue {
       apiSecret: config.apiSecret ?? env.TQ_API_SECRET ?? '',
       baseUrl: config.baseUrl ?? env.TQ_API_URL ?? DEFAULT_BASE_URL,
       timeout: config.timeout,
+      logger: config.logger,
+      debug: config.debug,
     };
     if (!resolved.apiKey || !resolved.apiSecret) {
       throw new TouchQueConfigError('Set TQ_API_KEY and TQ_API_SECRET (or pass { apiKey, apiSecret }).');
@@ -88,6 +128,13 @@ export class TouchQue {
     this.actions = new Actions(http);
     this.risk = new Risk(http);
     this.recovery = new Recovery(http);
+    this.assist = new Assist(http);
+    this.agents = new Agents(http);
+    this.identity = new Identity(http);
+    this.mobile = new Mobile(http);
+    this.qrPairings = new QrPairings(http);
+    this.deviceRisk = new DeviceRisk(http);
+    this.safeGuard = new SafeGuard(http);
     registerInternals(this, { apiSecret: resolved.apiSecret, resources: { http, auth: this.auth, login: this.login, offline: this.offline, risk: this.risk } });
   }
 
@@ -179,13 +226,31 @@ export {
 
 export { requireTouchQue, TouchQueMiddlewareOptions } from './middleware/express';
 export { withTouchQue, WithTouchQueOptions, forwardedFor, ipFromVercel, ipFromCloudflare } from './next';
+export { createTouchQueLogin } from './nextLogin';
+export type { NextSession, TouchQueNextOptions, CookieSource } from './nextLogin';
 export { runGuard, GUARD_HEADERS, GuardInput, GuardResult, GuardBody, SilentSignInOptions } from './guard';
 export { signGuardToken, verifyGuardToken, normalizeDetails } from './steps';
 export { touchqueRouter, TouchQueRouterOptions } from './router';
+// The same relay routes for Next.js (App Router) and other Fetch-API runtimes: Request in, Response out.
+export { touchqueRelay } from './relay';
+export type { TouchQueRelayOptions } from './relay';
+// TouchQue Login (hosted sign-in): OpenID Connect client, cookie sessions, Express routes
+export * from './hostedLogin';
+export { MyAccount, MyAccountError } from './myAccount';
+export type { MyAccountConfig, MyAccountProfile, MyAccountMethods, MyAccountProfileChanges } from './myAccount';
+export { seal as sealSession, unseal as unsealSession, safeReturnTo } from './hostedLoginSession';
+export { hostedLoginRoutes, requireSignIn, requireAccessToken } from './middleware/hostedLoginExpress';
+export type { HostedLoginSession, HostedLoginRoutesOptions, RequireSignInOptions } from './middleware/hostedLoginExpress';
 export type { RateLimitOptions } from './rateLimiter';
+// The relay's rate limiter, for withTouchQue and your own relays.
+export { FixedWindowLimiter } from './rateLimiter';
 
+export { newCodeReplyKey, openCodeReply } from './codeReply';
+export type { CodeReplyKey } from './codeReply';
 export type {
   TouchQueConfig,
+  TouchQueLogger,
+  LoginReplyRequest,
   GenerateSecretOptions,
   GenerateSecretResponse,
   ResetSecretOptions,

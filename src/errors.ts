@@ -36,6 +36,64 @@ export class TouchQueAPIError extends TouchQueError {
 }
 
 /**
+ * The organization behind your workspace cannot use this feature here (HTTP
+ * 403). `reason`:
+ * - `not_in_plan` — the feature is not in its plan (`feature_not_in_plan`): an
+ *   owner or admin adds it in the TouchQue dashboard;
+ * - `read_only` — it is being turned off (`feature_read_only`): reads still
+ *   work for 14 days, changes are refused;
+ * - `off` — it is switched off on this TouchQue deployment (`feature_off`).
+ * `feature` is the catalog id (`device_risk`, `ai_agents`, `mobile_sdk`, `ciam`…).
+ * Extends TouchQueAPIError, so existing `catch` blocks still see it; catch one
+ * of the three subclasses to tell them apart.
+ */
+export class TouchQueFeatureError extends TouchQueAPIError {
+  public readonly feature: string | undefined;
+  public readonly reason: 'not_in_plan' | 'read_only' | 'off';
+
+  constructor(status: number, data: TouchQueErrorData, reason: 'not_in_plan' | 'read_only' | 'off') {
+    super(status, data);
+    this.name = 'TouchQueFeatureError';
+    this.feature = typeof data.feature === 'string' ? data.feature : undefined;
+    this.reason = reason;
+  }
+}
+
+/** `feature_not_in_plan`: the feature is not in the organization's plan. */
+export class TouchQueFeatureNotInPlanError extends TouchQueFeatureError {
+  constructor(status: number, data: TouchQueErrorData) {
+    super(status, data, 'not_in_plan');
+    this.name = 'TouchQueFeatureNotInPlanError';
+  }
+}
+
+/** `feature_read_only`: the feature is being turned off; reads work, changes are refused. */
+export class TouchQueFeatureReadOnlyError extends TouchQueFeatureError {
+  constructor(status: number, data: TouchQueErrorData) {
+    super(status, data, 'read_only');
+    this.name = 'TouchQueFeatureReadOnlyError';
+  }
+}
+
+/** `feature_off`: the feature is switched off on this TouchQue deployment. */
+export class TouchQueFeatureOffError extends TouchQueFeatureError {
+  constructor(status: number, data: TouchQueErrorData) {
+    super(status, data, 'off');
+    this.name = 'TouchQueFeatureOffError';
+  }
+}
+
+/** The API error for an answer: a TouchQueFeatureError subclass for the three feature codes, else TouchQueAPIError. */
+export function apiError(status: number, data: TouchQueErrorData): TouchQueAPIError {
+  switch (data.error) {
+    case 'feature_not_in_plan': return new TouchQueFeatureNotInPlanError(status, data);
+    case 'feature_read_only': return new TouchQueFeatureReadOnlyError(status, data);
+    case 'feature_off': return new TouchQueFeatureOffError(status, data);
+    default: return new TouchQueAPIError(status, data);
+  }
+}
+
+/**
  * Thrown when a request never reached TouchQue at all — no HTTP response
  * was received (connection refused, DNS failure, client-side timeout).
  * Distinct from TouchQueAPIError, which means TouchQue DID respond, just
@@ -147,5 +205,37 @@ export class TouchQuePasskeyRequiredError extends TouchQueError {
     this.name = 'TouchQuePasskeyRequiredError';
     this.requestId = requestId;
     this.reason = reason;
+  }
+}
+
+/**
+ * An AI agent's approval ended without a usable approval: the person
+ * rejected it (`rejected`), the risk engine refused it (`blocked`), it was
+ * taken back after a call (`revoked`), it expired (`expired`), it was
+ * approved too long ago to use (`stale`) or it was already used (`redeemed`).
+ */
+export class TouchQueApprovalError extends TouchQueError {
+  public readonly approvalId: string;
+  public readonly status: string;
+  public readonly reason: string | undefined;
+
+  constructor(approvalId: string, status: string, reason?: string) {
+    super(`TouchQue: approval '${approvalId}' is ${status}${reason ? ` (${reason})` : ''}.`);
+    this.name = 'TouchQueApprovalError';
+    this.approvalId = approvalId;
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
+/**
+ * An approval token does not say what you are about to execute (another
+ * person, action type, amount, recipient…), or it is not a valid token from
+ * TouchQue. Do not execute.
+ */
+export class TouchQueApprovalMismatchError extends TouchQueError {
+  constructor(message: string) {
+    super(`TouchQue: ${message}`);
+    this.name = 'TouchQueApprovalMismatchError';
   }
 }

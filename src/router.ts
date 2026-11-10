@@ -41,7 +41,7 @@
 // `allowOfflineWithoutFirstFactor`): with the username taken from the body,
 // anyone could burn a user's offline attempts and lock them out.
 
-import { Router, Request, Response } from 'express';
+import type { Router, Request, Response } from 'express';
 import { TouchQue } from './index';
 import { TouchQueRejectedError, TouchQueTimeoutError, TouchQuePasskeyRequiredError, TouchQueAPIError } from './errors';
 import { runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, SilentSignInOptions } from './guard';
@@ -50,6 +50,9 @@ import type { LoginRequestDetails } from './types';
 /** Reserved action: the approval on the phone that unlocks adding a passkey. */
 const PASSKEY_ENROLL_ACTION = 'PASSKEY_ENROLL';
 import { FixedWindowLimiter, RateLimitOptions } from './rateLimiter';
+import { logOf } from './internal';
+import { describeError, type SdkLog } from './core/HttpClient';
+import { expressRouter } from './middleware/loadExpress';
 
 export interface TouchQueRouterOptions {
   /**
@@ -130,7 +133,7 @@ export interface TouchQueRouterOptions {
 }
 
 /** Same status-code mapping as requireTouchQue's middleware — kept in sync. */
-function sendAuthResultError(res: Response, error: unknown): void {
+function sendAuthResultError(res: Response, error: unknown, log: SdkLog): void {
   if (error instanceof TouchQueRejectedError) {
     res.status(403).json({ error: '2FA_REJECTED', message: 'User rejected the 2FA request on their device.' });
     return;
@@ -153,7 +156,7 @@ function sendAuthResultError(res: Response, error: unknown): void {
     res.status(apiErr.status).json({ error: apiErr.data?.error || apiErr.data?.message || apiErr.message || 'request_failed' });
     return;
   }
-  console.error('[TouchQue Router Error]', error);
+  log.error(`[TouchQue Router Error] ${describeError(error)}`);
   res.status(503).json({ error: '2FA_UNAVAILABLE', message: 'The 2FA verification service is temporarily unavailable.' });
 }
 
@@ -186,14 +189,14 @@ let warnedPreAuth = false;
 
 export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Router {
   const { getUserId, getLoginUser, actionType = 'LOGIN', onAuthenticated, getDetails } = options;
-  const router = Router();
+  const router = expressRouter('touchqueRouter');
   const limiter = options.rateLimit === false ? null : new FixedWindowLimiter(options.rateLimit || {});
 
   const offlineEnabled = Boolean(getLoginUser) || options.allowOfflineWithoutFirstFactor === true;
 
   if (!getLoginUser && !warnedPreAuth) {
     warnedPreAuth = true;
-    console.warn('[TouchQue] touchqueRouter: POST /login takes the username from the request body'
+    logOf(tq).warn('[TouchQue] touchqueRouter: POST /login takes the username from the request body'
       + (offlineEnabled ? ', and so do the offline routes' : '; the offline routes are disabled until you set it')
       + '. Set `getLoginUser` to bind them to your first factor (password step) so they cannot be used against arbitrary users.');
   }
@@ -329,7 +332,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
       }
       res.json({ status: 'success', requestId: result.approved.requestId, assurance: result.approved.assurance });
     } catch (error) {
-      sendAuthResultError(res, error);
+      sendAuthResultError(res, error, logOf(tq));
     }
   });
 

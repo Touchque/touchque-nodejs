@@ -46,3 +46,20 @@ describe('error classes', () => {
     expect(new TouchQueConfigError('x').name).toBe('TouchQueConfigError');
   });
 });
+
+describe('feature errors', () => {
+  test('apiError picks the typed error for each feature code and keeps TouchQueAPIError for the rest', async () => {
+    const { apiError, TouchQueFeatureError, TouchQueFeatureNotInPlanError, TouchQueFeatureReadOnlyError, TouchQueFeatureOffError } = await import('./errors');
+    const notInPlan = apiError(403, { error: 'feature_not_in_plan', feature: 'device_risk', message: 'This feature is not part of your organization’s plan.' });
+    expect(notInPlan).toBeInstanceOf(TouchQueFeatureNotInPlanError);
+    expect(notInPlan).toBeInstanceOf(TouchQueFeatureError);
+    expect(notInPlan).toBeInstanceOf(TouchQueAPIError);
+    expect(notInPlan).toMatchObject({ status: 403, feature: 'device_risk', reason: 'not_in_plan', name: 'TouchQueFeatureNotInPlanError' });
+    expect(apiError(403, { error: 'feature_read_only', feature: 'ai_agents' })).toMatchObject({ reason: 'read_only', feature: 'ai_agents' });
+    expect(apiError(403, { error: 'feature_read_only' })).toBeInstanceOf(TouchQueFeatureReadOnlyError);
+    expect(apiError(403, { error: 'feature_off', feature: 'ciam' })).toBeInstanceOf(TouchQueFeatureOffError);
+    const plain = apiError(403, { error: 'forbidden' });
+    expect(plain).toBeInstanceOf(TouchQueAPIError);
+    expect(plain).not.toBeInstanceOf(TouchQueFeatureError);
+  });
+});

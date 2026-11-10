@@ -5,7 +5,7 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
-import { TouchQue, type VerifyChallenge } from '../index';
+import { TouchQue, newCodeReplyKey, openCodeReply, type VerifyChallenge } from '../index';
 
 const USER = 'jane@acme.com';
 let fake: ChildProcess;
@@ -46,17 +46,38 @@ describe('login.verify onChallenge', () => {
     expect(seen[0].expiresAt).toBeTruthy();
   });
 
-  test('a throwing callback is logged and verify() keeps waiting', async () => {
+  test('a throwing callback goes to the logger (never console by default) and verify() keeps waiting', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = await tq.login.verify({
+      const logger = { warn: vi.fn(), error: vi.fn() };
+      const logged = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base, logger });
+      const result = await logged.login.verify({
         externalUsername: USER, type: 'SEND_MONEY', timeout: 5000, pollInterval: 50,
         onChallenge: (c) => { void control('/__test/approve', { id: c.requestId }); throw new Error('screen gone'); },
       });
       expect(result).toMatchObject({ approved: true, challengeCode: '47' });
-      expect(warn).toHaveBeenCalledWith('[TouchQue] onChallenge failed:', 'screen gone');
+      expect(logger.warn).toHaveBeenCalledWith('[TouchQue] onChallenge failed: Error: screen gone');
+
+      await tq.login.verify({
+        externalUsername: USER, type: 'SEND_MONEY', timeout: 5000, pollInterval: 50,
+        onChallenge: (c) => { void control('/__test/approve', { id: c.requestId }); throw new Error('screen gone'); },
+      });
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }
+  });
+
+  test('reply: the code the person typed opens only with the one-time key, for that request', async () => {
+    const key = newCodeReplyKey();
+    const sent = await tq.login.request({ externalUsername: USER, type: 'LOGIN', reply: { kind: 'code', key: key.publicKey, channel: 'sms', target: '+**********26' } });
+    expect((await tq.login.status(sent.requestId)).reply).toBeUndefined();
+    await control('/__test/approve', { id: sent.requestId, replyCode: '482 913' });
+    const status = await tq.login.status(sent.requestId);
+    expect(status.status).toBe('CONFIRMED');
+    expect(openCodeReply(key.privateKey, sent.requestId, status.reply!.ct)).toBe('482 913');
+    expect(openCodeReply(key.privateKey, 'another-request', status.reply!.ct)).toBeNull();
+    expect(openCodeReply(newCodeReplyKey().privateKey, sent.requestId, status.reply!.ct)).toBeNull();
+    expect(openCodeReply(key.privateKey, sent.requestId, 'v1.bad.ct')).toBeNull();
   });
 });

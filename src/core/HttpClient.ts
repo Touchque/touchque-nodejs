@@ -5,7 +5,7 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import * as crypto from 'crypto';
 import { TouchQueConfig } from '../types';
-import { TouchQueAPIError, TouchQueConfigError, TouchQueNetworkError } from '../errors';
+import { TouchQueAPIError, TouchQueConfigError, TouchQueNetworkError, apiError } from '../errors';
 
 const TEN_MB = 10 * 1024 * 1024;
 
@@ -39,10 +39,36 @@ function buildQuery(params?: Record<string, string | number | boolean>): string 
   return `?${parts.join('&')}`;
 }
 
+/** The SDK's own problems go here: the integrator's logger, `console` with `debug`, else nowhere. */
+export interface SdkLog {
+  warn(message: string): void;
+  error(message: string): void;
+}
+
+const SILENT: SdkLog = { warn: () => {}, error: () => {} };
+
+export function sdkLog(config: Pick<TouchQueConfig, 'logger' | 'debug'>): SdkLog {
+  const target = config.logger ?? (config.debug ? console : null);
+  if (!target) return SILENT;
+  return {
+    warn: (message) => { try { target.warn(message); } catch { /* a logger must never break a request */ } },
+    error: (message) => { try { target.error(message); } catch { /* a logger must never break a request */ } },
+  };
+}
+
+/** `Name (code): message` for a log line: never the error object, its request or its stack. */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return typeof err === 'string' ? err : 'unknown error';
+  const code = (err as { code?: unknown }).code;
+  return `${err.name}${typeof code === 'string' && code ? ` (${code})` : ''}: ${err.message}`;
+}
+
 export class HttpClient {
   private readonly client: AxiosInstance;
   private readonly apiKey: string;
   private readonly apiSecret: string;
+  /** Internal: where the SDK reports its own problems (silent by default). */
+  readonly log: SdkLog;
 
   constructor(config: TouchQueConfig) {
     if (!config.apiKey || typeof config.apiKey !== 'string') {
@@ -59,6 +85,10 @@ export class HttpClient {
 
     this.apiKey = config.apiKey;
     this.apiSecret = config.apiSecret;
+    this.log = sdkLog(config);
+    // console.log(tq) / JSON.stringify(tq) must not show the key or the secret.
+    Object.defineProperty(this, 'apiSecret', { enumerable: false });
+    Object.defineProperty(this, 'apiKey', { enumerable: false });
 
     const baseURL = config.baseUrl || 'https://api.touchque.com';
     assertSafeBaseUrl(baseURL);
@@ -173,7 +203,7 @@ export class HttpClient {
       }
       const status = axiosErr.response.status;
       const data = (axiosErr.response.data as Record<string, unknown>) || {};
-      return new TouchQueAPIError(status, {
+      return apiError(status, {
         error: data.error as string | undefined,
         message: data.message as string | undefined,
         code: data.code as string | undefined,
@@ -183,6 +213,8 @@ export class HttpClient {
           ? data.retryAfter
           : Number(axiosErr.response.headers?.['retry-after']) || undefined,
         caseCode: typeof data.caseCode === 'string' ? data.caseCode : undefined,
+        route: typeof data.route === 'string' ? data.route : undefined,
+        feature: typeof data.feature === 'string' ? data.feature : undefined,
       });
     }
     return new TouchQueAPIError(500, {

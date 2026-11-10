@@ -7,6 +7,15 @@ import * as crypto from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { TouchQue } from '../index';
+import type { DevicePosture } from '../types';
+
+/** A healthy phone posture, like the real API's `device` on a user with a linked phone. */
+const DEVICE_POSTURE: DevicePosture = {
+  platform: 'ios', model: 'iPhone15,3', osVersion: '18.1', securityPatch: null, appVersion: '1.0.0', screenLock: true,
+  biometrics: 'face', jailbroken: false, compromised: false, hardwareKey: true, attestation: 'apple-appattest', signed: true,
+  reportedAt: '2026-10-25T10:00:00.000Z', lastSeenAt: '2026-10-25T10:00:00.000Z', linkedAt: '2026-10-20T09:00:00.000Z',
+  state: 'healthy', issues: [],
+};
 
 export interface FakeRequest {
   id: string; user: string; type: string; referenceId: string | null;
@@ -25,6 +34,8 @@ export interface FakeBrowser {
 
 export interface FakeApi {
   client: TouchQue;
+  /** The fake's address, for a client with other options. */
+  url: string;
   requests: FakeRequest[];
   linked: Set<string>;
   pendingSecrets: Set<string>;
@@ -230,7 +241,7 @@ export async function startFakeApi(): Promise<FakeApi> {
   app.get('/users/:u', (req, res) => {
     const u = req.params.u;
     if (!api.linked.has(u) && !api.pendingSecrets.has(u)) return res.status(404).json({ error: 'not found' });
-    res.json({ externalUsername: u, deviceId: api.linked.has(u) ? 'dev-1' : null, used: api.linked.has(u), frozen: false });
+    res.json({ externalUsername: u, deviceId: api.linked.has(u) ? 'dev-1' : null, used: api.linked.has(u), frozen: false, device: api.linked.has(u) ? DEVICE_POSTURE : null });
   });
 
   // Like the real API: a QR that follows a push is tied to it. A request the phone REJECTED kills the QR
@@ -268,6 +279,7 @@ export async function startFakeApi(): Promise<FakeApi> {
 
   return Object.assign(api, {
     client,
+    url: `http://127.0.0.1:${port}`,
     approve(id?: string, via = 'DEVICE', extra: { provisional?: boolean } = {}) {
       const r = pick(id); r.status = 'CONFIRMED'; r.confirmedVia = via; r.provisional = Boolean(extra.provisional);
       rememberBrowser(r);

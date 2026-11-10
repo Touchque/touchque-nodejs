@@ -70,12 +70,19 @@ export class Auth {
    * flips true, `deviceId` gets set) without sending a LOGIN challenge to
    * their device, e.g. while polling during enrollment.
    *
+   * `device` is the linked phone's posture for device trust (`DevicePosture`:
+   * OS version, screen lock, jailbreak/root, hardware key, `state`, `issues`),
+   * or `null` before a phone is linked.
+   *
    * @example
-   * const { used, deviceId } = await tq.auth.getUser({
+   * const { used, deviceId, device } = await tq.auth.getUser({
    *   externalUsername: 'user@company.com'
    * });
    * if (used && deviceId) {
    *   // Device has linked — no approval push needed to confirm this.
+   * }
+   * if (device?.state === 'compromised') {
+   *   // The phone is jailbroken/rooted or tampered with.
    * }
    */
   async getUser(options: { externalUsername: string }): Promise<GetUserResponse> {

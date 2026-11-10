@@ -4,17 +4,28 @@
 // This is the core of TouchQue: any action that needs 2FA confirmation
 // (login, withdraw, transfer, purchase, etc.) uses these methods.
 
-import { HttpClient } from '../core/HttpClient';
+import { HttpClient, describeError } from '../core/HttpClient';
 import {
   LoginRequestOptions,
   LoginRequestResponse,
   LoginStatusResponse,
+  ConsumeResponse,
   WaitForApprovalOptions,
   WaitForApprovalResult,
   VerifyOptions,
   VerifyChallenge,
+  SecurityChanges,
 } from '../types';
 import { TouchQueTimeoutError, TouchQueRejectedError, TouchQuePasskeyRequiredError } from '../errors';
+
+/** Dates go out as ISO 8601; strings and epoch milliseconds as given. */
+function securityChangesBody(changes: SecurityChanges): Record<string, string | number> {
+  const out: Record<string, string | number> = {};
+  for (const [kind, at] of Object.entries(changes)) {
+    if (at !== undefined && at !== null) out[kind] = at instanceof Date ? at.toISOString() : at;
+  }
+  return out;
+}
 
 export class Login {
   constructor(private readonly http: HttpClient) {}
@@ -56,6 +67,17 @@ export class Login {
    * });
    *
    * @example
+   * // A payout to an IBAN: shown in full on the phone, flagged when it imitates
+   * // one the user used before; rules can refuse it within 24 h of a 2FA change
+   * const response = await tq.login.request({
+   *   externalUsername: 'user@company.com',
+   *   type: 'PAYOUT',
+   *   destination: { kind: 'iban', value: 'TR33 0006 1005 1978 6457 8413 26', known: savedIbans },
+   *   securityChanges: { password: user.passwordChangedAt },
+   * });
+   * if (response.destination?.lookalike.length) logSuspiciousPayee(response);
+   *
+   * @example
    * // Silent sign-ins: once approved, this browser is known (see `risk.check`)
    * const response = await tq.login.request({
    *   externalUsername: 'user@company.com',
@@ -73,8 +95,18 @@ export class Login {
       ...(options.details && { details: options.details }),
       ...(options.requireBiometric && { requireBiometric: options.requireBiometric }),
       ...(options.requireNumberMatch && { requireNumberMatch: options.requireNumberMatch }),
+      ...((options.challengeDigits === 2 || options.challengeDigits === 3) && { challengeDigits: options.challengeDigits }),
+      ...(options.expiresIn !== undefined && { expiresIn: options.expiresIn }),
+      ...(options.qrPairing && { qrPairing: options.qrPairing }),
+      ...(options.reply && { reply: options.reply }),
       ...(options.browserProof && { browserProof: options.browserProof }),
+      ...(options.clientSignals && { clientSignals: options.clientSignals }),
+      ...(options.deviceRisk && { deviceRisk: options.deviceRisk }),
+      ...(options.deviceRiskRequestId && { deviceRiskRequestId: options.deviceRiskRequestId }),
       ...(options.context && { context: options.context }),
+      ...(options.securityChanges && { securityChanges: securityChangesBody(options.securityChanges) }),
+      ...(options.destination && { destination: options.destination }),
+      ...(options.locale && { locale: options.locale }),
     });
   }
 
@@ -91,6 +123,21 @@ export class Login {
    */
   async status(requestId: string): Promise<LoginStatusResponse> {
     return this.http.get<LoginStatusResponse>(`/login/status/${encodeURIComponent(requestId)}`);
+  }
+
+  /**
+   * Use an approved request exactly once. The first call on a CONFIRMED request
+   * wins atomically; every later call (a replayed token, a retried form post)
+   * throws `TouchQueAPIError` with `code: 'already_used'` (409). Compare the
+   * answer's user, type, referenceId and details with what you asked for, or
+   * use `tq.complete()`, which does both.
+   *
+   * @example
+   * const approval = await tq.login.consume(requestId);
+   * if (approval.externalUsername !== user) throw new Error('approval for someone else');
+   */
+  async consume(requestId: string): Promise<ConsumeResponse> {
+    return this.http.post<ConsumeResponse>(`/login/${encodeURIComponent(requestId)}/consume`, {});
   }
 
   /**
@@ -215,10 +262,10 @@ export class Login {
       try {
         const out = onChallenge(challenge) as Promise<unknown> | undefined;
         if (out && typeof out.catch === 'function') {
-          out.catch((err: unknown) => console.warn('[TouchQue] onChallenge failed:', err instanceof Error ? err.message : err));
+          out.catch((err: unknown) => this.http.log.warn(`[TouchQue] onChallenge failed: ${describeError(err)}`));
         }
       } catch (err) {
-        console.warn('[TouchQue] onChallenge failed:', err instanceof Error ? err.message : err);
+        this.http.log.warn(`[TouchQue] onChallenge failed: ${describeError(err)}`);
       }
     }
 

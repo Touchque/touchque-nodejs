@@ -126,6 +126,11 @@ describe('Vishing Shield', () => {
   test('webhook reason and event constants', () => {
     expect(WebhookReasons).toMatchObject({ VISHING_SUSPECTED: 'vishing_suspected', PHISHING_ORIGIN: 'phishing_origin', USER_REPORTED_COACHED: 'user_reported_coached' });
     expect(WebhookEvents).toMatchObject({ APPROVAL_REVOKED: 'APPROVAL_REVOKED', APPROVAL_RECONFIRMED: 'APPROVAL_RECONFIRMED' });
+    // The names the backend sends (Mobile SDK, Never Locked Out recovery and help desk events).
+    const sent = ['MOBILE_PUSH',
+      'RECOVERY_STARTED', 'RECOVERY_DEVICE_BOUND', 'RECOVERY_COOLING', 'RECOVERY_COMPLETED', 'RECOVERY_VETOED', 'RECOVERY_EXPIRED', 'RECOVERY_FAILED',
+      'ASSIST_OPENED', 'ASSIST_ENDED', 'ASSIST_CHECK_PASSED', 'ASSIST_CHECK_FAILED', 'ASSIST_UNFROZEN', 'ASSIST_CLAIM_CONFIRMED', 'ASSIST_CLAIM_UNVERIFIED'];
+    for (const name of sent) expect((WebhookEvents as Record<string, string>)[name]).toBe(name);
   });
 });
 
@@ -184,6 +189,13 @@ describe('"Why?" case codes', () => {
     await expect(api.client.login.request({ externalUsername: 'jane@acme.com', type: 'LOGIN' })).rejects.toMatchObject({ status: 403, caseCode: 'REF-USE' });
     api.opts.blocked = undefined;
     expect((await api.client.risk.check({ externalUsername: 'jane@acme.com' })).caseCode).toBe('CHK-2QX');
+  });
+
+  test('login.request sends expiresIn only when given', async () => {
+    await api.client.login.request({ externalUsername: 'jane@acme.com', type: 'LOGIN', expiresIn: 180, clientSignals: 'eyJ2IjoxfQ' });
+    expect(api.calls.filter((c) => c.path === '/login/request').at(-1)?.body).toMatchObject({ expiresIn: 180, clientSignals: 'eyJ2IjoxfQ' });
+    await api.client.login.request({ externalUsername: 'jane@acme.com', type: 'LOGIN' });
+    expect(api.calls.filter((c) => c.path === '/login/request').at(-1)?.body).not.toHaveProperty('expiresIn');
   });
 
   test('the guard keeps showing the case while it waits', async () => {
