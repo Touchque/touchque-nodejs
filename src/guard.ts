@@ -2,21 +2,21 @@
 // Framework-agnostic step-up guard. The Express middleware, the Next.js wrapper
 // and touchqueRouter's /login are thin adapters over runGuard().
 //
-// Contract (same in every TouchQue server SDK):
+// Contract (same in every Touchque server SDK):
 //   1st request            → 202 { touchque: step, token }   show the step in your UI
 //   repeat with the token  → 202 while waiting, then the protected handler runs once
 //   refused                → 403 / 408 / 423 / 429 { touchque: { state, reason?, retryAfter? } }
 // Request headers the browser sends back:
-//   X-TouchQue-Token       the token from the last response
-//   X-TouchQue-Offline: 1  switch to offline approval (phone has no internet)
-//   X-TouchQue-Code        the code from the phone (offline QR code, or with
-//   X-TouchQue-Code-Type: totp  the rolling time-based code)
-//   X-TouchQue-Browser     the browser's device-bound key proof (silent sign-ins,
+//   X-Touchque-Token       the token from the last response
+//   X-Touchque-Offline: 1  switch to offline approval (phone has no internet)
+//   X-Touchque-Code        the code from the phone (offline QR code, or with
+//   X-Touchque-Code-Type: totp  the rolling time-based code)
+//   X-Touchque-Browser     the browser's device-bound key proof (silent sign-ins,
 //                          read only when the adapter's `silentSignIn` is on)
 
-import type { TouchQue } from './index';
+import type { Touchque } from './index';
 import type { LoginRequestDetails } from './types';
-import { TouchQueAPIError, TouchQueConfigError, TouchQueNetworkError } from './errors';
+import { TouchqueAPIError, TouchqueConfigError, TouchqueNetworkError } from './errors';
 import { detailsDigest } from './approvalProof';
 import {
   Approval, Step, StepState, GuardTokenClaims,
@@ -39,7 +39,7 @@ const MAX_BROWSER_PROOF = 4096;
 
 /** `silentSignIn: { maxAgeSeconds }`: your own limit on the age of the last phone approval in the browser. */
 export interface SilentSignInOptions {
-  /** Seconds (integer); 0 = always ask. TouchQue never goes beyond its own limit (7 days). */
+  /** Seconds (integer); 0 = always ask. Touchque never goes beyond its own limit (7 days). */
   maxAgeSeconds?: number;
 }
 
@@ -63,20 +63,20 @@ export interface GuardInput {
   code?: string;
   codeType?: string;
   /**
-   * Silent sign-ins: the browser's device-bound key proof (`X-TouchQue-Browser`),
+   * Silent sign-ins: the browser's device-bound key proof (`X-Touchque-Browser`),
    * passed through untouched. Attached to the push, so its approval makes the
    * browser known.
    */
   browserProof?: string;
   /**
    * Silent sign-ins (default off). A new attempt that carries `browserProof`
-   * first asks TouchQue (`risk.check`); when it answers `prompt: false` the
+   * first asks Touchque (`risk.check`); when it answers `prompt: false` the
    * guard approves at once, with no push (`assurance.method: 'silent'`,
    * `confirmedVia: 'SILENT'`, `reasons`). Otherwise, and on any error, the
    * usual push starts.
    */
   silentSignIn?: boolean | SilentSignInOptions;
-  /** For your TouchQue Actions only (`event.context`). Never shown on the phone. */
+  /** For your Touchque Actions only (`event.context`). Never shown on the phone. */
   context?: Record<string, unknown>;
 }
 
@@ -95,7 +95,7 @@ const STATUS: Record<StepState, number> = {
   approved: 200, rejected: 403, blocked: 403, expired: 408, frozen: 423, rate_limited: 429,
 };
 
-export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardResult> {
+export async function runGuard(tq: Touchque, input: GuardInput): Promise<GuardResult> {
   const r = resources(tq);
   const secret = guardSecret(tq);
   const { action } = input;
@@ -165,14 +165,14 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
           },
         }, { rid: bound?.rid, n: ch.challengeCode || bound?.n });
       } catch (err) {
-        if (err instanceof TouchQueAPIError && err.status === 409 && (err.code || (err.data as { error?: string })?.error) === 'request_rejected') {
+        if (err instanceof TouchqueAPIError && err.status === 409 && (err.code || (err.data as { error?: string })?.error) === 'request_rejected') {
           return issue({ state: 'rejected', requestId: bound?.rid, reason: 'request_rejected' });
         }
         // The push it would follow now waits for a passkey (Vishing Shield): no QR, run the passkey instead.
-        if (err instanceof TouchQueAPIError && bound?.rid && (err.code || (err.data as { error?: string })?.error) === 'passkey_required') {
+        if (err instanceof TouchqueAPIError && bound?.rid && (err.code || (err.data as { error?: string })?.error) === 'passkey_required') {
           return issue({ state: 'passkey_required', requestId: bound.rid, number: bound.n }, { n: bound.n });
         }
-        if (err instanceof TouchQueAPIError && err.status < 500) {
+        if (err instanceof TouchqueAPIError && err.status < 500) {
           return issue({ state: 'blocked', reason: err.code || (err.data as { error?: string })?.error || 'offline_unavailable' });
         }
         throw err;
@@ -187,7 +187,7 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
         try {
           return { status: 200, approved: await complete(r, bound.rid, expectations) };
         } catch (err) {
-          if (err instanceof TouchQueAPIError && err.status === 409) return issue({ state: 'expired', reason: err.code || 'already_used' });
+          if (err instanceof TouchqueAPIError && err.status === 409) return issue({ state: 'expired', reason: err.code || 'already_used' });
           throw err;
         }
       }
@@ -218,19 +218,19 @@ export async function runGuard(tq: TouchQue, input: GuardInput): Promise<GuardRe
       enroll: input.enroll, browserProof, context: input.context,
     }));
   } catch (err) {
-    if (err instanceof TouchQueConfigError) {
-      r.http.log.error(`[TouchQue] ${err.message}`);
+    if (err instanceof TouchqueConfigError) {
+      r.http.log.error(`[Touchque] ${err.message}`);
       return { status: 500, body: { touchque: { state: 'blocked', reason: 'misconfigured' }, error: { code: 'misconfigured', message: 'Two-factor approval is not configured correctly.' } } };
     }
-    if (!(err instanceof TouchQueNetworkError) && !(err instanceof TouchQueAPIError && err.status >= 500)) {
-      r.http.log.error(`[TouchQue] approval failed: ${describeError(err)}`);
+    if (!(err instanceof TouchqueNetworkError) && !(err instanceof TouchqueAPIError && err.status >= 500)) {
+      r.http.log.error(`[Touchque] approval failed: ${describeError(err)}`);
     }
     return { status: 503, body: { touchque: { state: 'blocked', reason: 'unavailable' }, error: { code: 'unavailable', message: 'Two-factor approval is temporarily unavailable.' } } };
   }
 }
 
 /**
- * Asks TouchQue whether this known browser may sign in without the phone.
+ * Asks Touchque whether this known browser may sign in without the phone.
  * Fails closed: only an answer of exactly `prompt: false` approves; any error
  * (network, 4xx, 5xx, a server without silent sign-ins) means "ask as usual".
  */
@@ -270,7 +270,7 @@ export function silentInputFromHeaders(
  * start a push, so relays do not count it against the per-user push limit
  * (R1-03: with a 1.5 s poll the 6th poll was refused after 7.5 s).
  */
-export function isStatusPoll(tq: TouchQue, input: GuardInput): boolean {
+export function isStatusPoll(tq: Touchque, input: GuardInput): boolean {
   if (!input.user || !input.token || input.offline || input.code) return false;
   const claims = verifyGuardToken(guardSecret(tq), input.token);
   if (!claims || !claims.rid) return false;

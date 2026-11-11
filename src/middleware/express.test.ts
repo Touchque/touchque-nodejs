@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { requireTouchQue } from './express';
+import { requireTouchque } from './express';
 import { startFakeApi, FakeApi } from '../testing/fakeApi';
-import { TouchQue } from '../index';
+import { Touchque } from '../index';
 
 let api: FakeApi;
 beforeEach(async () => { api = await startFakeApi(); });
@@ -15,7 +15,7 @@ function partnerApp(action = 'SEND_MONEY', extra: Record<string, unknown> = {}) 
   app.use(express.json());
   const handler = vi.fn((req: any, res: any) => res.json({ done: true, touchque: req.touchque }));
   app.post('/transfer',
-    requireTouchQue(action, {
+    requireTouchque(action, {
       client: api.client,
       user: (req) => req.get('x-user') || undefined,
       details: (req) => ({ Amount: `${req.body.amount} EUR` }),
@@ -27,8 +27,8 @@ function partnerApp(action = 'SEND_MONEY', extra: Record<string, unknown> = {}) 
 const send = (app: express.Express, body: object, headers: Record<string, string> = {}) =>
   request(app).post('/transfer').set({ 'x-user': 'jane@acme.com', ...headers }).send(body);
 
-describe('requireTouchQue — one line, full flow', () => {
-  test('no signed-in user → 401, nothing sent to TouchQue', async () => {
+describe('requireTouchque — one line, full flow', () => {
+  test('no signed-in user → 401, nothing sent to Touchque', async () => {
     const { app, handler } = partnerApp();
     const res = await request(app).post('/transfer').send({ amount: 5 });
     expect(res.status).toBe(401);
@@ -170,7 +170,7 @@ describe('requireTouchQue — one line, full flow', () => {
       expect(spy).not.toHaveBeenCalled(); // silent by default
 
       const logger = { warn: vi.fn(), error: vi.fn() };
-      const client = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: api.url, logger });
+      const client = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: api.url, logger });
       const { app: logged } = partnerApp('NOT_DEFINED', { client });
       expect((await send(logged, { amount: 1 })).status).toBe(500);
       expect(logger.error.mock.calls[0][0]).toContain("tq.actionTypes.define('NOT_DEFINED')");
@@ -251,11 +251,11 @@ describe('requireTouchQue — one line, full flow', () => {
     expect(ok.body.touchque.assurance.method).toBe('offline_totp');
   });
 
-  test('legacy signature requireTouchQue(tq, action, { getUserId }) still works', async () => {
+  test('legacy signature requireTouchque(tq, action, { getUserId }) still works', async () => {
     api.linked.add('a@b.com');
     const app = express();
     app.use(express.json());
-    app.post('/x', requireTouchQue(api.client, 'LOGIN', { getUserId: () => 'a@b.com' }), (_req, res) => res.json({ ok: true }));
+    app.post('/x', requireTouchque(api.client, 'LOGIN', { getUserId: () => 'a@b.com' }), (_req, res) => res.json({ ok: true }));
     const res = await request(app).post('/x').send({});
     expect(res.status).toBe(202);
     expect(res.body.touchque.state).toBe('waiting');

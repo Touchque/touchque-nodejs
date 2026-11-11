@@ -1,9 +1,9 @@
-// TouchQue Login in Next.js: the route handlers (login, callback, me, token,
+// Touchque Login in Next.js: the route handlers (login, callback, me, token,
 // logout) against a fake tenant, and the Edge middleware reading the same
 // session cookie with WebCrypto.
 import { describe, it, expect } from 'vitest';
 import { createHash, generateKeyPairSync, sign as signRaw } from 'crypto';
-import { createTouchQueLogin } from './nextLogin';
+import { createTouchqueLogin } from './nextLogin';
 import { touchqueMiddleware, hasSession } from './nextMiddleware';
 
 const ISSUER = 'https://acme.login.touchque.com';
@@ -59,10 +59,10 @@ function jarFrom(res: Response, jar: Record<string, string> = {}) {
 const cookieHeader = (jar: Record<string, string>) => Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
 const req = (path: string, jar: Record<string, string> = {}) => new Request(`http://localhost:3000${path}`, { headers: { cookie: cookieHeader(jar) } });
 
-describe('createTouchQueLogin (Next.js)', () => {
+describe('createTouchqueLogin (Next.js)', () => {
   it('signs in, reads the session, refreshes the token, signs out; the middleware guards pages', async () => {
     const t = fakeTenant();
-    const touchque = createTouchQueLogin({ domain: ISSUER, clientId: CLIENT, secret: SECRET, appUrl: 'http://localhost:3000', fetch: t.fetchImpl });
+    const touchque = createTouchqueLogin({ domain: ISSUER, clientId: CLIENT, secret: SECRET, appUrl: 'http://localhost:3000', fetch: t.fetchImpl });
     const call = (path: string, jar: Record<string, string>) => touchque.handlers.GET(req(path, jar), { params: Promise.resolve({ action: path.split('?')[0].split('/')[2] }) });
     const guard = touchqueMiddleware({ secret: SECRET, protect: ['/dashboard'] });
 
@@ -109,7 +109,7 @@ describe('createTouchQueLogin (Next.js)', () => {
 
   it('a callback without this browser\'s sign-in fails; returnTo stays on this site', async () => {
     const t = fakeTenant();
-    const touchque = createTouchQueLogin({ domain: ISSUER, clientId: CLIENT, secret: SECRET, appUrl: 'https://app.acme.test', fetch: t.fetchImpl });
+    const touchque = createTouchqueLogin({ domain: ISSUER, clientId: CLIENT, secret: SECRET, appUrl: 'https://app.acme.test', fetch: t.fetchImpl });
     let r = await touchque.handlers.GET(new Request('https://app.acme.test/auth/callback?code=x&state=y'));
     expect(r.status).toBe(400);
     expect((await r.json()).error).toBe('state_missing');

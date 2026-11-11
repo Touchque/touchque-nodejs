@@ -11,9 +11,9 @@ vi.mock('express', () => {
 describe('express is optional', () => {
   test('the main entry loads without importing express', async () => {
     const m = await import('./index');
-    expect(typeof m.TouchQue).toBe('function');
-    expect(typeof m.withTouchQue).toBe('function');
-    expect(typeof m.createTouchQueLogin).toBe('function');
+    expect(typeof m.Touchque).toBe('function');
+    expect(typeof m.withTouchque).toBe('function');
+    expect(typeof m.createTouchqueLogin).toBe('function');
     // The helper requires express only when called (installed here, so it works).
     const router = m.touchqueRouter({} as never, { getUserId: () => undefined, getLoginUser: () => undefined });
     expect(typeof router).toBe('function');

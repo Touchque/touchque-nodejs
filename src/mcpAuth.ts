@@ -1,11 +1,11 @@
 // src/mcpAuth.ts
-// For an MCP server whose authorization server is TouchQue SSO (Organization
+// For an MCP server whose authorization server is Touchque SSO (Organization
 // → MCP servers in the dashboard; issuer https://sso.touchque.com/mcp):
 //
 //   - serves its protected resource metadata (RFC 9728) at
 //     /.well-known/oauth-protected-resource (and the path-suffixed variant), so
-//     MCP clients find TouchQue and ask for a token for exactly this server;
-//   - checks every request's token: signed by TouchQue (its JWKS), this issuer,
+//     MCP clients find Touchque and ask for a token for exactly this server;
+//   - checks every request's token: signed by Touchque (its JWKS), this issuer,
 //     audience = this server's URL (RFC 8707), not expired, and, for a token
 //     bound to a DPoP key, a fresh proof for this very request;
 //   - answers 401 with WWW-Authenticate (resource_metadata) without a usable
@@ -18,12 +18,12 @@
 //   // in a tool: auth.requireTool(req.touchqueMcp, 'delete_ticket');
 
 import * as crypto from 'crypto';
-import { TouchQueConfigError } from './errors';
+import { TouchqueConfigError } from './errors';
 
 export interface McpAuthOptions {
-  /** TouchQue SSO's MCP issuer, e.g. https://sso.touchque.com/mcp. */
+  /** Touchque SSO's MCP issuer, e.g. https://sso.touchque.com/mcp. */
   issuer: string;
-  /** This MCP server's URL, exactly as registered in TouchQue. */
+  /** This MCP server's URL, exactly as registered in Touchque. */
   resource: string;
   /** Tool name → the scope it needs (also listed as scopes_supported). */
   tools?: Record<string, string>;
@@ -92,7 +92,7 @@ export class McpAuth {
   private readonly seenProofs = new Map<string, number>();
 
   constructor(options: McpAuthOptions) {
-    if (!options?.issuer || !options?.resource) throw new TouchQueConfigError('McpAuth needs issuer (TouchQue SSO\'s MCP issuer) and resource (this server\'s URL)');
+    if (!options?.issuer || !options?.resource) throw new TouchqueConfigError('McpAuth needs issuer (Touchque SSO\'s MCP issuer) and resource (this server\'s URL)');
     this.issuer = options.issuer.replace(/\/+$/, '');
     this.resource = options.resource;
     this.tools = options.tools || {};
@@ -162,7 +162,7 @@ export class McpAuth {
   async verifyRequest(req: McpRequest): Promise<McpAuthClaims> {
     const authz = header(req.headers, 'authorization') || '';
     const m = /^(Bearer|DPoP)\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i.exec(authz.trim());
-    if (!m) throw this.fail(401, 'missing_token', 'A TouchQue access token is required');
+    if (!m) throw this.fail(401, 'missing_token', 'A Touchque access token is required');
     const [, scheme, token] = m;
     const [h, p, s] = token.split('.');
     let head: Record<string, any>;
@@ -173,7 +173,7 @@ export class McpAuth {
     } catch {
       throw this.fail(401, 'invalid_token', 'The token is malformed');
     }
-    if (head.typ !== 'at+jwt' || (head.alg !== 'RS256' && head.alg !== 'ES256')) throw this.fail(401, 'invalid_token', 'Not a TouchQue access token');
+    if (head.typ !== 'at+jwt' || (head.alg !== 'RS256' && head.alg !== 'ES256')) throw this.fail(401, 'invalid_token', 'Not a Touchque access token');
     let key: crypto.KeyObject | undefined;
     try {
       key = await this.keyFor(String(head.kid || ''));

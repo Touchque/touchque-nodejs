@@ -5,14 +5,14 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { TouchQue, TouchQueConfigError, qrPairingUri } from '../index';
+import { Touchque, TouchqueConfigError, qrPairingUri } from '../index';
 
 const THUMB = 'NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs';
 
 describe('QR pairing against the fake API', () => {
   let fake: ChildProcess;
   let base = '';
-  let tq: TouchQue;
+  let tq: Touchque;
   const control = (p: string, body: object) => fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
   beforeAll(async () => {
     fake = spawn(process.execPath, [resolve(__dirname, '../../testing/fake-touchque-api.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -21,7 +21,7 @@ describe('QR pairing against the fake API', () => {
       fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
     });
     base = `http://127.0.0.1:${port}`;
-    tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+    tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
     await control('/__test/link', { user: 'ayse@acme.com' });
   });
   afterAll(() => { fake?.kill(); });
@@ -51,9 +51,9 @@ describe('QR pairing against the fake API', () => {
     const refused = await tq.qrPairings.refuse(p.pairingId, { reason: 'device_not_approved', message: 'Ask IT to approve this computer.', deviceCode: 'ABC-123' });
     expect(refused).toMatchObject({ state: 'refused', outcome: { reason: 'device_not_approved', message: 'Ask IT to approve this computer.', deviceCode: 'ABC-123' } });
 
-    await expect(tq.qrPairings.create({ keyThumbprint: 'short' })).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(tq.qrPairings.create({ keyThumbprint: THUMB, ttlSeconds: 10 })).rejects.toBeInstanceOf(TouchQueConfigError);
-    expect(() => tq.qrPairings.refuse(p.pairingId, { reason: 'nope' as never, message: 'x' })).toThrow(TouchQueConfigError);
-    expect(() => tq.qrPairings.refuse(p.pairingId, { reason: 'other', message: ' ' })).toThrow(TouchQueConfigError);
+    await expect(tq.qrPairings.create({ keyThumbprint: 'short' })).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(tq.qrPairings.create({ keyThumbprint: THUMB, ttlSeconds: 10 })).rejects.toBeInstanceOf(TouchqueConfigError);
+    expect(() => tq.qrPairings.refuse(p.pairingId, { reason: 'nope' as never, message: 'x' })).toThrow(TouchqueConfigError);
+    expect(() => tq.qrPairings.refuse(p.pairingId, { reason: 'other', message: ' ' })).toThrow(TouchqueConfigError);
   });
 });

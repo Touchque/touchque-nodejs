@@ -5,12 +5,12 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
-import { TouchQue, TouchQueAPIError, TouchQueConfigError, isMobilePushExpired, mobilePushFromWebhook } from '../index';
+import { Touchque, TouchqueAPIError, TouchqueConfigError, isMobilePushExpired, mobilePushFromWebhook } from '../index';
 
 describe('Mobile SDK against the fake API', () => {
   let fake: ChildProcess;
   let base = '';
-  let tq: TouchQue;
+  let tq: Touchque;
   beforeAll(async () => {
     fake = spawn(process.execPath, [resolve(__dirname, '../../testing/fake-touchque-api.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
     const port = await new Promise<number>((res, rej) => {
@@ -18,10 +18,10 @@ describe('Mobile SDK against the fake API', () => {
       fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
     });
     base = `http://127.0.0.1:${port}`;
-    tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+    tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
   });
   afterAll(() => { fake?.kill(); });
-  // The app's side: what TouchQue.enroll(token) does in the iOS / Android SDK.
+  // The app's side: what Touchque.enroll(token) does in the iOS / Android SDK.
   const app = (body: Record<string, unknown>) => fetch(`${base}/__test/mobile-enroll`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<Record<string, string>>);
 
   test('a token is spent once; a second phone needs replace and revokes the first', async () => {
@@ -31,7 +31,7 @@ describe('Mobile SDK against the fake API', () => {
     expect((await app({ enrollmentToken: first.enrollmentToken })).code).toBe('enrollment_used');
 
     const again = await tq.mobile.createEnrollment({ externalUsername: 'ada@shop.example' }).catch((e) => e);
-    expect(again).toBeInstanceOf(TouchQueAPIError);
+    expect(again).toBeInstanceOf(TouchqueAPIError);
     expect(again.code).toBe('already_enrolled');
 
     const second = await tq.mobile.createEnrollment({ externalUsername: 'ada@shop.example', replace: true, ttlSeconds: 300 });
@@ -44,7 +44,7 @@ describe('Mobile SDK against the fake API', () => {
     expect(await tq.mobile.testPush(devices[0].deviceId)).toEqual({ via: 'webhook', ok: true });
     expect(await tq.mobile.removeDevice(devices[0].deviceId)).toEqual({ removed: true, wasLinked: true });
     await expect(tq.mobile.testPush(devices[0].deviceId)).rejects.toMatchObject({ code: 'device_revoked' });
-    await expect(tq.mobile.createEnrollment({ externalUsername: '' })).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(tq.mobile.createEnrollment({ externalUsername: '' })).rejects.toBeInstanceOf(TouchqueConfigError);
   });
 
   test('settings change only what is given', async () => {
@@ -55,7 +55,7 @@ describe('Mobile SDK against the fake API', () => {
     expect(s.push).toMatchObject({ ios: 'webhook', android: 'webhook' });
   });
 
-  test('your own push keys: TouchQue sends that platform\'s push, and never shows the key back', async () => {
+  test('your own push keys: Touchque sends that platform\'s push, and never shows the key back', async () => {
     const s = await tq.mobile.updateSettings({
       apns: { keyId: 'ABC123DEFG', teamId: 'TEAM123456', topic: 'com.shop.app', key: '-----BEGIN PRIVATE KEY-----…' },
       fcm: { serviceAccount: { project_id: 'shop', client_email: 'push@shop.iam.gserviceaccount.com', private_key: '…' } },

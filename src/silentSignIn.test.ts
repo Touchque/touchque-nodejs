@@ -2,10 +2,10 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import vectors from '../fixtures/silent-sign-in-vectors.json';
-import { runGuard, withTouchQue, requireTouchQue, touchqueRouter, GUARD_HEADERS } from './index';
+import { runGuard, withTouchque, requireTouchque, touchqueRouter, GUARD_HEADERS } from './index';
 import { startFakeApi, FakeApi } from './testing/fakeApi';
 
-// The proof as the browser sends it in X-TouchQue-Browser (base64url JSON) and its key's thumbprint.
+// The proof as the browser sends it in X-Touchque-Browser (base64url JSON) and its key's thumbprint.
 const PROOF = (vectors.browserProof.cases.find((c) => c.name === 'validHeaderEncoding')!.proof as string);
 const THUMBPRINT = vectors.browserProof.thumbprint.expected;
 const SILENT_CODES = ['known_browser', 'recent_approval', 'same_phone', 'familiar_network', 'no_risk_signal'];
@@ -129,26 +129,26 @@ describe('guard: silentSignIn', () => {
   });
 });
 
-describe('adapters read X-TouchQue-Browser only when silentSignIn is on', () => {
+describe('adapters read X-Touchque-Browser only when silentSignIn is on', () => {
   function partnerApp(silentSignIn?: boolean) {
     const app = express();
     app.use(express.json());
     const handler = vi.fn((req: any, res: any) => res.json({ done: true, touchque: req.touchque }));
-    app.post('/account', requireTouchQue('LOGIN', { client: api.client, user: () => 'jane@acme.com', silentSignIn }), handler);
+    app.post('/account', requireTouchque('LOGIN', { client: api.client, user: () => 'jane@acme.com', silentSignIn }), handler);
     return { app, handler };
   }
 
-  test('requireTouchQue: the handler runs at once for a known browser', async () => {
+  test('requireTouchque: the handler runs at once for a known browser', async () => {
     api.opts.silent = true;
     const { app, handler } = partnerApp(true);
-    const res = await request(app).post('/account').set('X-TouchQue-Browser', PROOF).send({});
+    const res = await request(app).post('/account').set('X-Touchque-Browser', PROOF).send({});
     expect(res.status).toBe(200);
     expect(res.body.touchque).toMatchObject({ confirmedVia: 'SILENT', assurance: { method: 'silent' } });
     expect(handler).toHaveBeenCalledTimes(1);
     expect(api.lastCheck.browserProof).toBe(PROOF);
   });
 
-  test('requireTouchQue without silentSignIn ignores the header', async () => {
+  test('requireTouchque without silentSignIn ignores the header', async () => {
     api.opts.silent = true;
     const { app, handler } = partnerApp();
     const res = await request(app).post('/account').set(GUARD_HEADERS.browser, PROOF).send({});
@@ -158,12 +158,12 @@ describe('adapters read X-TouchQue-Browser only when silentSignIn is on', () => 
     expect(api.requests[0].browserProof).toBeUndefined();
   });
 
-  test('withTouchQue: ctx.touchque says silent', async () => {
+  test('withTouchque: ctx.touchque says silent', async () => {
     api.opts.silent = true;
-    const route = withTouchQue('LOGIN', async (_req, { touchque }) => Response.json({ method: touchque.assurance?.method, reasons: touchque.reasons?.length }), {
+    const route = withTouchque('LOGIN', async (_req, { touchque }) => Response.json({ method: touchque.assurance?.method, reasons: touchque.reasons?.length }), {
       client: api.client, user: () => 'jane@acme.com', silentSignIn: true,
     });
-    const res = await route(new Request('https://app.example.com/account', { method: 'POST', headers: { 'X-TouchQue-Browser': PROOF } }));
+    const res = await route(new Request('https://app.example.com/account', { method: 'POST', headers: { 'X-Touchque-Browser': PROOF } }));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ method: 'silent', reasons: 5 });
   });
@@ -175,13 +175,13 @@ describe('adapters read X-TouchQue-Browser only when silentSignIn is on', () => 
     app.use('/touchque', touchqueRouter(api.client, {
       getUserId: () => undefined, getLoginUser: () => 'jane@acme.com', onAuthenticated, silentSignIn: true,
     }));
-    const pushed = await request(app).post('/touchque/login').set('X-TouchQue-Browser', PROOF).send({});
+    const pushed = await request(app).post('/touchque/login').set('X-Touchque-Browser', PROOF).send({});
     expect(pushed.status).toBe(202);
     expect(api.requests[0].browserProof).toBe(PROOF);
     expect(onAuthenticated).not.toHaveBeenCalled();
 
     api.opts.silent = true;
-    const silent = await request(app).post('/touchque/login').set('X-TouchQue-Browser', PROOF).send({});
+    const silent = await request(app).post('/touchque/login').set('X-Touchque-Browser', PROOF).send({});
     expect(silent.status).toBe(200);
     expect(silent.body).toMatchObject({ status: 'success', requestId: 'silent', assurance: { method: 'silent' } });
     expect(onAuthenticated).toHaveBeenCalledTimes(1);

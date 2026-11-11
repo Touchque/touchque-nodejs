@@ -15,7 +15,7 @@
 // Endpoints mounted (relative to wherever you app.use() this router):
 //   POST   /enroll/start                    (auth required) -> GenerateSecretResponse
 //   GET    /enroll/status                   (auth required) -> { linked, used, deviceId }
-//   POST   /login                           (pre-auth) -> 202 { touchque: step, token } until approved (same contract as requireTouchQue)
+//   POST   /login                           (pre-auth) -> 202 { touchque: step, token } until approved (same contract as requireTouchque)
 //   POST   /offline/challenge               (pre-auth, body.externalUsername) -> QR for a phone with no internet
 //   POST   /offline/verify                  (pre-auth, body.challengeId/code)
 //   POST   /offline/totp                    (pre-auth, body.externalUsername/code) -> time-based code fallback
@@ -33,17 +33,17 @@
 // router (or have `getUserId` itself check and return undefined).
 //
 // Pre-auth routes are rate limited per IP and per username by default
-// (`rateLimit`), and TouchQue itself caps approval pushes per user. Set
+// (`rateLimit`), and Touchque itself caps approval pushes per user. Set
 // `getLoginUser` so POST /login and the offline routes only work for a user
 // who already passed YOUR first factor (password step): then nobody can make
-// TouchQue push to, or lock out, an arbitrary user through your server.
+// Touchque push to, or lock out, an arbitrary user through your server.
 // The offline routes are OFF until you do (or explicitly opt out with
 // `allowOfflineWithoutFirstFactor`): with the username taken from the body,
 // anyone could burn a user's offline attempts and lock them out.
 
 import type { Router, Request, Response } from 'express';
-import { TouchQue } from './index';
-import { TouchQueRejectedError, TouchQueTimeoutError, TouchQuePasskeyRequiredError, TouchQueAPIError } from './errors';
+import { Touchque } from './index';
+import { TouchqueRejectedError, TouchqueTimeoutError, TouchquePasskeyRequiredError, TouchqueAPIError } from './errors';
 import { runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, SilentSignInOptions } from './guard';
 import type { LoginRequestDetails } from './types';
 
@@ -54,7 +54,7 @@ import { logOf } from './internal';
 import { describeError, type SdkLog } from './core/HttpClient';
 import { expressRouter } from './middleware/loadExpress';
 
-export interface TouchQueRouterOptions {
+export interface TouchqueRouterOptions {
   /**
    * Resolve the signed-in user's identifier for the "auth required" routes
    * (enrollment, passkey registration/management). Return `undefined` if
@@ -68,7 +68,7 @@ export interface TouchQueRouterOptions {
    * POST /offline/challenge and POST /offline/totp use this user and IGNORE any
    * username in the request body; if it returns nothing they answer 401
    * FIRST_FACTOR_REQUIRED. Without it, anyone can type any user's email and
-   * make TouchQue push to that user's phone (push-bombing) or spend that
+   * make Touchque push to that user's phone (push-bombing) or spend that
    * user's offline attempts.
    */
   getLoginUser?: (req: Request) => string | undefined | Promise<string | undefined>;
@@ -94,8 +94,8 @@ export interface TouchQueRouterOptions {
 
   /**
    * Silent sign-ins for POST /login (default off). When on, a new sign-in
-   * whose browser sent its device-bound key proof (`X-TouchQue-Browser`,
-   * added by `@touchque/web` with `browserKey: true`) first asks TouchQue
+   * whose browser sent its device-bound key proof (`X-Touchque-Browser`,
+   * added by `@touchque/web` with `browserKey: true`) first asks Touchque
    * whether anything about it is new. If nothing is, it succeeds at once with
    * no push (`onAuthenticated` gets `via: 'silent'`; the answer's
    * `assurance.method` is `'silent'`). Otherwise, and on any error, the usual
@@ -132,21 +132,21 @@ export interface TouchQueRouterOptions {
   ) => void | Promise<void>;
 }
 
-/** Same status-code mapping as requireTouchQue's middleware — kept in sync. */
+/** Same status-code mapping as requireTouchque's middleware — kept in sync. */
 function sendAuthResultError(res: Response, error: unknown, log: SdkLog): void {
-  if (error instanceof TouchQueRejectedError) {
+  if (error instanceof TouchqueRejectedError) {
     res.status(403).json({ error: '2FA_REJECTED', message: 'User rejected the 2FA request on their device.' });
     return;
   }
-  if (error instanceof TouchQuePasskeyRequiredError) {
+  if (error instanceof TouchquePasskeyRequiredError) {
     res.status(409).json({ error: 'PASSKEY_REQUIRED', requestId: error.requestId, message: 'Approve this sign-in with your passkey.' });
     return;
   }
-  if (error instanceof TouchQueTimeoutError) {
+  if (error instanceof TouchqueTimeoutError) {
     res.status(408).json({ error: '2FA_TIMEOUT', message: 'User did not respond to the 2FA request in time.' });
     return;
   }
-  // A real TouchQueAPIError (e.g. 404 "no linked device for this user")
+  // A real TouchqueAPIError (e.g. 404 "no linked device for this user")
   // still carries a useful client-range status + message — surface it
   // instead of collapsing every non-reject/timeout error into an opaque
   // "unavailable". Only a genuine network failure or unexpected error
@@ -156,24 +156,24 @@ function sendAuthResultError(res: Response, error: unknown, log: SdkLog): void {
     res.status(apiErr.status).json({ error: apiErr.data?.error || apiErr.data?.message || apiErr.message || 'request_failed' });
     return;
   }
-  log.error(`[TouchQue Router Error] ${describeError(error)}`);
+  log.error(`[Touchque Router Error] ${describeError(error)}`);
   res.status(503).json({ error: '2FA_UNAVAILABLE', message: 'The 2FA verification service is temporarily unavailable.' });
 }
 
 /**
- * For plain relay routes (enroll, passkey): a client-range TouchQue status is
- * forwarded with its machine-readable code only — never TouchQue's internal
+ * For plain relay routes (enroll, passkey): a client-range Touchque status is
+ * forwarded with its machine-readable code only — never Touchque's internal
  * message text — anything else becomes 502.
  */
 function sendRelayError(res: Response, error: unknown): void {
-  if (error instanceof TouchQueAPIError && error.status < 500) {
+  if (error instanceof TouchqueAPIError && error.status < 500) {
     res.status(error.status).json({ error: error.code || (error.data as { error?: string })?.error || 'request_failed' });
     return;
   }
   res.status(502).json({ error: 'relay_error' });
 }
 
-function requireUserId(req: Request, res: Response, getUserId: TouchQueRouterOptions['getUserId']): string | undefined {
+function requireUserId(req: Request, res: Response, getUserId: TouchqueRouterOptions['getUserId']): string | undefined {
   const userId = getUserId(req);
   if (!userId) {
     res.status(401).json({
@@ -187,7 +187,7 @@ function requireUserId(req: Request, res: Response, getUserId: TouchQueRouterOpt
 
 let warnedPreAuth = false;
 
-export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Router {
+export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Router {
   const { getUserId, getLoginUser, actionType = 'LOGIN', onAuthenticated, getDetails } = options;
   const router = expressRouter('touchqueRouter');
   const limiter = options.rateLimit === false ? null : new FixedWindowLimiter(options.rateLimit || {});
@@ -196,7 +196,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
 
   if (!getLoginUser && !warnedPreAuth) {
     warnedPreAuth = true;
-    logOf(tq).warn('[TouchQue] touchqueRouter: POST /login takes the username from the request body'
+    logOf(tq).warn('[Touchque] touchqueRouter: POST /login takes the username from the request body'
       + (offlineEnabled ? ', and so do the offline routes' : '; the offline routes are disabled until you set it')
       + '. Set `getLoginUser` to bind them to your first factor (password step) so they cannot be used against arbitrary users.');
   }
@@ -206,7 +206,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
     if (offlineEnabled) return true;
     res.status(403).json({
       error: 'OFFLINE_REQUIRES_FIRST_FACTOR',
-      message: 'Offline sign-in is disabled: configure getLoginUser (or allowOfflineWithoutFirstFactor) on the TouchQue router.',
+      message: 'Offline sign-in is disabled: configure getLoginUser (or allowOfflineWithoutFirstFactor) on the Touchque router.',
     });
     return false;
   };
@@ -294,9 +294,9 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   router.post('/login', async (req, res) => {
     const externalUsername = await loginUser(req, res, 'externalUsername');
     if (!externalUsername) return;
-    // Same two-phase contract as requireTouchQue: 202 with the step (matching
+    // Same two-phase contract as requireTouchque: 202 with the step (matching
     // number / first-time QR / offline QR) until approved; the page re-sends
-    // with X-TouchQue-Token. `req.ip` is only the real end-user address when
+    // with X-Touchque-Token. `req.ip` is only the real end-user address when
     // this app sets `trust proxy` for its deployment.
     const input = {
       user: externalUsername,
@@ -337,7 +337,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
   });
 
   // ── Offline Sign: QR challenge / typed code (pre-auth — identity is the typed email) ──
-  // The username used for onAuthenticated is the one TouchQue returns for the
+  // The username used for onAuthenticated is the one Touchque returns for the
   // challenge/code, never the one in the request body.
   router.post('/offline/challenge', async (req, res) => {
     if (!offlineAllowed(res)) return;
@@ -461,7 +461,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
     if (!allow(req, res, 'passkey-approve')) return;
     try {
       const r = await tq.webauthn.authenticateVerify({ requestId: req.body?.requestId, response: req.body?.response });
-      // Open the session only for the user TouchQue says was approved. A name sent by the
+      // Open the session only for the user Touchque says was approved. A name sent by the
       // browser is never trusted: anyone could approve their own request and claim to be someone else.
       if (r.success && getLoginUser && typeof r.externalUsername === 'string') {
         const expected = await getLoginUser(req);
@@ -497,7 +497,7 @@ export function touchqueRouter(tq: TouchQue, options: TouchQueRouterOptions): Ro
           res.json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true }));
           return;
         } catch (error) {
-          if (!(error instanceof TouchQueAPIError && error.status === 403 && error.code === 'enrollment_approval_required')) throw error;
+          if (!(error instanceof TouchqueAPIError && error.status === 403 && error.code === 'enrollment_approval_required')) throw error;
         }
       }
       const allowed = isStatusPoll(tq, input)

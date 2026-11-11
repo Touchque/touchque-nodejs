@@ -1,5 +1,5 @@
 // src/resources/Identity.ts
-// TouchQue Login Management API (tq.identity): your customers' accounts,
+// Touchque Login Management API (tq.identity): your customers' accounts,
 // roles, business-customer organizations, apps, APIs, connections and the
 // tenant itself, from your server with your workspace key.
 //
@@ -8,7 +8,7 @@
 //   const job = await tq.identity.imports.start({ users: [{ email, passwordHash: '$2b$10$…' }] });
 
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueAPIError } from '../errors';
+import { TouchqueAPIError } from '../errors';
 
 const seg = (v: string) => encodeURIComponent(v);
 
@@ -113,7 +113,7 @@ class Users {
   sessions(id: string) { return this.http.get<{ sessions: Array<Record<string, unknown>> }>(`/identity/users/${seg(id)}/sessions`); }
   signOutEverywhere(id: string) { return this.http.delete<{ sessions: number; refreshTokens: number }>(`/identity/users/${seg(id)}/sessions`); }
   endSession(id: string, sessionId: string) { return this.http.delete<void>(`/identity/users/${seg(id)}/sessions/${seg(sessionId)}`); }
-  /** Removes passkeys, unlinks the TouchQue app, turns email codes off, signs out everywhere. */
+  /** Removes passkeys, unlinks the Touchque app, turns email codes off, signs out everywhere. */
   resetMfa(id: string) { return this.http.delete<{ passkeysRemoved: number; appsUnlinked: number }>(`/identity/users/${seg(id)}/mfa`); }
   /** Accounts at providers whose tokens the vault keeps for the user (connections with tokenVault on). */
   connectedAccounts(id: string) {
@@ -184,7 +184,7 @@ class CustomDomains extends Crud {
   /** The domain with this id (404 `not_found` when the workspace has none). */
   async get(id: string) {
     const domain = (await this.list()).find((d) => d.id === id);
-    if (!domain) throw new TouchQueAPIError(404, { code: 'not_found', error: 'No custom domain with this id' });
+    if (!domain) throw new TouchqueAPIError(404, { code: 'not_found', error: 'No custom domain with this id' });
     return domain;
   }
   /** Checks the DNS TXT record (a domain your organization verified needs none). */
@@ -222,12 +222,12 @@ export class Identity {
 
   /** The tenant (404 not_enabled until it is set up). */
   getTenant() { return this.http.get<Record<string, unknown>>('/identity/tenant'); }
-  /** Turns TouchQue Login on ({ slug, displayName }) or changes its settings. */
+  /** Turns Touchque Login on ({ slug, displayName }) or changes its settings. */
   updateTenant(body: Body) { return this.http.put<Record<string, unknown>>('/identity/tenant', body); }
   rotateSigningKey() { return this.http.post<{ kid: string }>('/identity/tenant/signing-keys/rotate'); }
   /**
    * The phone app the hosted pages tell customers to approve on ("Approve on the Acme app").
-   * null: your brand name when the Mobile SDK is set up, else TouchQue (`approverApp` in the tenant shows which).
+   * null: your brand name when the Mobile SDK is set up, else Touchque (`approverApp` in the tenant shows which).
    */
   setApproverAppName(name: string | null) { return this.http.put<Record<string, unknown>>('/identity/tenant', { branding: { approverAppName: name } }); }
   /**
@@ -249,7 +249,7 @@ export class Identity {
   getDelivery() { return this.http.get<Record<string, unknown>>('/identity/delivery'); }
   /** Your own provider: email smtp | ses | postmark | sendgrid; sms twilio | netgsm. A secret left out keeps its stored value. */
   setDelivery(channel: 'email' | 'sms', provider: DeliveryProvider) { return this.http.put<Record<string, unknown>>(`/identity/delivery/${channel}`, provider as unknown as Body); }
-  /** Back to TouchQue's transport. */
+  /** Back to Touchque's transport. */
   removeDelivery(channel: 'email' | 'sms') { return this.http.delete<Record<string, unknown>>(`/identity/delivery/${channel}`); }
   /** One test message through the provider in use. */
   testDelivery(channel: 'email' | 'sms', to: string) { return this.http.post<{ ok: boolean; queued: boolean; status: string | null; provider: string | null; error: string | null }>(`/identity/delivery/${channel}/test`, { to }); }

@@ -1,12 +1,12 @@
 // src/hostedLoginSession.ts
-// Encrypted cookies for apps that use TouchQue Login without a session store:
+// Encrypted cookies for apps that use Touchque Login without a session store:
 // the sign-in in progress (state, nonce, PKCE verifier, where to go back) and
 // the signed-in session (user claims, tokens). AES-256-GCM with a key derived
 // from your secret; values too big for one cookie are split across several.
 // Framework-agnostic: express and Next.js helpers build on it.
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
-import { TouchQueError } from './errors';
+import { TouchqueError } from './errors';
 
 const CHUNK = 3800;
 const MAX_CHUNKS = 5;
@@ -19,7 +19,7 @@ export interface CookieOptions {
 }
 
 function keyOf(secret: string, purpose: string): Buffer {
-  if (typeof secret !== 'string' || secret.length < 32) throw new TouchQueError('The cookie secret must be at least 32 characters');
+  if (typeof secret !== 'string' || secret.length < 32) throw new TouchqueError('The cookie secret must be at least 32 characters');
   return createHash('sha256').update(`touchque-login:${purpose}:${secret}`).digest();
 }
 
@@ -76,7 +76,7 @@ export function cookieHeaders(name: string, sealed: string | null, cookies: Reco
     return out;
   }
   const chunks = Math.ceil(sealed.length / CHUNK);
-  if (chunks > MAX_CHUNKS) throw new TouchQueError('The session is too large for cookies');
+  if (chunks > MAX_CHUNKS) throw new TouchqueError('The session is too large for cookies');
   const kept = new Set<string>();
   for (let i = 0; i < chunks; i += 1) {
     kept.add(`${name}.${i}`);

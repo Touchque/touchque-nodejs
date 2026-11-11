@@ -1,16 +1,16 @@
-// TouchQue Actions in the Node SDK: every management call sends exactly what
+// Touchque Actions in the Node SDK: every management call sends exactly what
 // the shared vectors (fixtures/actions-api-vectors.json) say, against the
 // shared fake API (testing/fake-touchque-api.mjs), signed like the real API.
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { TouchQue, TouchQueConfigError, handlerToCode, type LoginRequestEvent, type LoginRequestApi } from '../index';
+import { Touchque, TouchqueConfigError, handlerToCode, type LoginRequestEvent, type LoginRequestApi } from '../index';
 
 const vectors = JSON.parse(readFileSync(resolve(__dirname, '../../fixtures/actions-api-vectors.json'), 'utf8'));
 let fake: ChildProcess;
 let base = '';
-let tq: TouchQue;
+let tq: Touchque;
 
 beforeAll(async () => {
   fake = spawn(process.execPath, [resolve(__dirname, '../../testing/fake-touchque-api.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -19,7 +19,7 @@ beforeAll(async () => {
     fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
   });
   base = `http://127.0.0.1:${port}`;
-  tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+  tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
 });
 afterAll(() => { fake?.kill(); });
 
@@ -100,9 +100,9 @@ describe('actions helpers', () => {
   });
 
   test('bad input is refused before any request', async () => {
-    await expect(tq.actions.deploy('Bad Slug', { trigger: 'login.request', code: 'x' })).rejects.toThrow(TouchQueConfigError);
+    await expect(tq.actions.deploy('Bad Slug', { trigger: 'login.request', code: 'x' })).rejects.toThrow(TouchqueConfigError);
     await expect(tq.actions.deploy('no-code', { trigger: 'login.request' })).rejects.toThrow(/needs code, handler or template/);
-    await expect(tq.actions.secrets.set('lowercase', 'v')).rejects.toThrow(TouchQueConfigError);
+    await expect(tq.actions.secrets.set('lowercase', 'v')).rejects.toThrow(TouchqueConfigError);
     await expect(tq.actions.deploy('both', { trigger: 'login.request', code: 'x', handler: () => undefined })).rejects.toThrow(/not both/);
   });
 

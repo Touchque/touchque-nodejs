@@ -2,14 +2,14 @@
 // AI agents as identities of their own (tq.agents): register an agent with
 // its PUBLIC key, give it an accountable owner and the action types it may ask
 // approvals for, suspend, revoke or stop every agent at once. The agent itself
-// never gets your API key: it signs in with its own key (TouchQueAgent).
+// never gets your API key: it signs in with its own key (TouchqueAgent).
 //
 //   const { privateJwk, publicJwk } = generateAgentKey();      // where the agent runs
 //   const agent = await tq.agents.create({ name: 'Invoice bot', allowedTypes: ['PAY_INVOICE'], publicKey: publicJwk });
 //   // give the agent agent.id and privateJwk (a secret store, never your repository)
 
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueApprovalMismatchError, TouchQueConfigError } from '../errors';
+import { TouchqueApprovalMismatchError, TouchqueConfigError } from '../errors';
 import type { Mandate } from '../agent';
 import {
   ApprovalExpectation, ApprovalTokenClaims, AuthorizationDetail, Jwks, assertApprovalMatches, decodeApprovalToken, verifyApprovalTokenWith,
@@ -139,7 +139,7 @@ export interface UpdateAgentParams {
 /** Refuses a private key before it leaves this process. */
 function publicOnly(jwk: AgentPublicJwk | undefined): AgentPublicJwk | undefined {
   if (jwk && typeof jwk === 'object' && 'd' in jwk) {
-    throw new TouchQueConfigError('Pass the agent\'s PUBLIC key: this one has private parts (d). The private key must stay where the agent runs.');
+    throw new TouchqueConfigError('Pass the agent\'s PUBLIC key: this one has private parts (d). The private key must stay where the agent runs.');
   }
   return jwk;
 }
@@ -192,9 +192,9 @@ export interface AgentVaultAccount {
 
 /**
  * The token vault for your agents: after your own OAuth flow with a person,
- * deposit their tokens; TouchQue keeps them sealed and refreshes them, and
+ * deposit their tokens; Touchque keeps them sealed and refreshes them, and
  * the agents a connection names get a short-lived access token
- * (TouchQueAgent.getConnectionToken), never the refresh token.
+ * (TouchqueAgent.getConnectionToken), never the refresh token.
  */
 export class AgentVault {
   constructor(private readonly http: HttpClient) {}
@@ -242,8 +242,8 @@ export class Agents {
   /**
    * Uses an agent's approval exactly once, right before you execute: checks
    * `expect` against the token first (nothing is used on a mismatch), then
-   * TouchQue checks the token and marks it used, and the answer is checked
-   * again. Throws TouchQueApprovalMismatchError or a TouchQueAPIError
+   * Touchque checks the token and marks it used, and the answer is checked
+   * again. Throws TouchqueApprovalMismatchError or a TouchqueAPIError
    * (`already_redeemed`, `token_expired`, `provisional`…).
    *
    * @example
@@ -266,16 +266,16 @@ export class Agents {
   async approvalAudience(): Promise<string> {
     if (!this.audience) {
       const { audience } = await this.http.get<{ audience: string }>('/agents/approval-audience');
-      if (typeof audience !== 'string' || !audience) throw new TouchQueApprovalMismatchError('Touchque did not name this workspace\'s approval audience');
+      if (typeof audience !== 'string' || !audience) throw new TouchqueApprovalMismatchError('Touchque did not name this workspace\'s approval audience');
       this.audience = audience;
     }
     return this.audience;
   }
 
   /**
-   * Verifies an approval token offline (signature with TouchQue's published
+   * Verifies an approval token offline (signature with Touchque's published
    * keys, expiry, `aud`, `expect`), for a service that executes without
-   * calling TouchQue. `aud` must be this workspace's: `audience` defaults to
+   * calling Touchque. `aud` must be this workspace's: `audience` defaults to
    * approvalAudience(), and a token without aud or for another workspace is
    * refused. It does not make the token single-use: redeemApproval does.
    */

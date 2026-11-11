@@ -1,18 +1,18 @@
 // src/resources/Mobile.ts
-// TouchQue Mobile SDK, your backend's side: your own iOS/Android app is the
-// approver of your users (white-label); they never install the TouchQue app.
+// Touchque Mobile SDK, your backend's side: your own iOS/Android app is the
+// approver of your users (white-label); they never install the Touchque app.
 //
 // 1. A user signed in to your app turns approvals on: `createEnrollment`
-//    gives a one-time token; your app hands it to the SDK (`TouchQue.enroll`).
+//    gives a one-time token; your app hands it to the SDK (`Touchque.enroll`).
 // 2. Ask for approvals as always (`tq.login.request`, `tq.start`, guards…):
 //    they reach your app over the SDK's encrypted connection.
-// 3. TouchQue holds no push key of your app. For each request it sends you a
+// 3. Touchque holds no push key of your app. For each request it sends you a
 //    signed MOBILE_PUSH webhook: verify it (`tq.webhook.verify`), then
 //    `mobilePushFromWebhook(event)` gives the APNs payload / FCM data to send
 //    with your own credentials.
 
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 
 export interface MobileEnrollment {
   enrollmentId: string;
@@ -75,7 +75,7 @@ export interface MobileSdkSettings {
   updatedAt?: string | null;
 }
 
-/** Your push keys as TouchQue shows them (never the keys themselves). */
+/** Your push keys as Touchque shows them (never the keys themselves). */
 export interface MobilePushSettings {
   ios: 'touchque' | 'webhook';
   android: 'touchque' | 'webhook';
@@ -92,11 +92,11 @@ export interface MobileSdkSettingsUpdate {
   attestation?: 'off' | 'optional' | 'required';
   enrollTtlSeconds?: number;
   /**
-   * Your APNs key: TouchQue then sends the iOS push itself instead of the MOBILE_PUSH webhook. `key` is the .p8
+   * Your APNs key: Touchque then sends the iOS push itself instead of the MOBILE_PUSH webhook. `key` is the .p8
    * file's text (leave it out to keep the stored key); `topic` your app's bundle id. null removes it.
    */
   apns?: { keyId?: string; teamId?: string; topic?: string; key?: string; production?: boolean } | null;
-  /** Your Firebase service account (the JSON, as an object or text): TouchQue then sends the Android push. null removes it. */
+  /** Your Firebase service account (the JSON, as an object or text): Touchque then sends the Android push. null removes it. */
   fcm?: { serviceAccount: Record<string, unknown> | string } | null;
 }
 
@@ -126,14 +126,14 @@ export class Mobile {
   /**
    * A one-time enrollment token for a user you signed in. Whoever spends it
    * becomes the user's approver, so authenticate the user first. Throws
-   * TouchQueAPIError `already_enrolled` (send `replace: true`) or `account_frozen`.
+   * TouchqueAPIError `already_enrolled` (send `replace: true`) or `account_frozen`.
    *
    * @example
    * const { enrollmentToken } = await tq.mobile.createEnrollment({ externalUsername: user.id });
-   * res.json({ enrollmentToken }); // the app calls TouchQue.enroll(token)
+   * res.json({ enrollmentToken }); // the app calls Touchque.enroll(token)
    */
   async createEnrollment(options: CreateMobileEnrollmentOptions): Promise<MobileEnrollment> {
-    if (!options?.externalUsername) throw new TouchQueConfigError('mobile.createEnrollment() needs the user (externalUsername)');
+    if (!options?.externalUsername) throw new TouchqueConfigError('mobile.createEnrollment() needs the user (externalUsername)');
     return this.http.post<MobileEnrollment>('/mobile/enrollments', {
       externalUsername: options.externalUsername,
       ...(options.replace && { replace: true }),
@@ -152,22 +152,22 @@ export class Mobile {
   }
 
   async getDevice(deviceId: string): Promise<MobileDevice> {
-    if (!deviceId) throw new TouchQueConfigError('mobile.getDevice() needs the device id');
+    if (!deviceId) throw new TouchqueConfigError('mobile.getDevice() needs the device id');
     return (await this.http.get<{ device: MobileDevice }>(`/mobile/devices/${encodeURIComponent(deviceId)}`)).device;
   }
 
   /** Stops a device from approving (the user has no approver until you enrol again). */
   async removeDevice(deviceId: string): Promise<{ removed: boolean; wasLinked: boolean }> {
-    if (!deviceId) throw new TouchQueConfigError('mobile.removeDevice() needs the device id');
+    if (!deviceId) throw new TouchqueConfigError('mobile.removeDevice() needs the device id');
     return this.http.delete(`/mobile/devices/${encodeURIComponent(deviceId)}`);
   }
 
   /**
-   * A harmless push to the device, the way a request would reach it: by TouchQue with your key for its
+   * A harmless push to the device, the way a request would reach it: by Touchque with your key for its
    * platform, else the MOBILE_PUSH webhook (kind `test`). `ok`: APNs / FCM accepted it (or the webhook left).
    */
   async testPush(deviceId: string): Promise<{ via: 'touchque' | 'webhook'; ok: boolean; reason?: string }> {
-    if (!deviceId) throw new TouchQueConfigError('mobile.testPush() needs the device id');
+    if (!deviceId) throw new TouchqueConfigError('mobile.testPush() needs the device id');
     return this.http.post(`/mobile/devices/${encodeURIComponent(deviceId)}/test-push`, {});
   }
 

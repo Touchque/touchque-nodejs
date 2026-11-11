@@ -7,14 +7,14 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
 import {
-  TouchQue, TouchQueAgent, TouchQueApprovalError, generateAgentKey,
-  withTouchQueApproval, currentApproval, requireAgentApproval, approveInterruptionsWithTouchQue, touchqueCanUseTool, touchquePreToolUseHook, guardMcpClient,
+  Touchque, TouchqueAgent, TouchqueApprovalError, generateAgentKey,
+  withTouchqueApproval, currentApproval, requireAgentApproval, approveInterruptionsWithTouchque, touchqueCanUseTool, touchquePreToolUseHook, guardMcpClient,
   type ApprovalPolicy,
 } from './index';
 
 let fake: ChildProcess;
 let base = '';
-let agent: TouchQueAgent;
+let agent: TouchqueAgent;
 const USER = 'frameworks@example.com';
 
 beforeAll(async () => {
@@ -24,12 +24,12 @@ beforeAll(async () => {
     fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
   });
   base = `http://127.0.0.1:${port}`;
-  const tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+  const tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
   await fetch(`${base}/__test/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: USER }) });
   await tq.actionTypes.define('PAY_INVOICE', { critical: false });
   const key = generateAgentKey();
   const created = await tq.agents.create({ name: 'Framework bot', allowedTypes: ['PAY_INVOICE'], publicKey: key.publicJwk });
-  agent = new TouchQueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
+  agent = new TouchqueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
 });
 afterAll(() => { fake?.kill(); });
 
@@ -46,7 +46,7 @@ const policy = (approve: boolean): ApprovalPolicy<{ iban: string; amount: string
 describe('agent framework helpers', () => {
   test('a wrapped tool runs after the phone approved, with the approval token; a rejection stops it', async () => {
     const seen: string[] = [];
-    const pay = withTouchQueApproval(async ({ iban }: { iban: string; amount: string }, runContext?: string) => {
+    const pay = withTouchqueApproval(async ({ iban }: { iban: string; amount: string }, runContext?: string) => {
       seen.push(`${iban} ${runContext} ${currentApproval()!.approvalToken ? 'token' : 'none'}`);
       return 'paid';
     }, policy(true));
@@ -54,8 +54,8 @@ describe('agent framework helpers', () => {
     expect(seen).toEqual(['TR330006100519786457841326 ctx token']);
     expect(currentApproval()).toBeUndefined();
 
-    const refused = withTouchQueApproval(async () => 'paid', policy(false));
-    await expect(refused({ iban: 'TR330006100519786457841326', amount: '9.00' })).rejects.toBeInstanceOf(TouchQueApprovalError);
+    const refused = withTouchqueApproval(async () => 'paid', policy(false));
+    await expect(refused({ iban: 'TR330006100519786457841326', amount: '9.00' })).rejects.toBeInstanceOf(TouchqueApprovalError);
   }, 30000);
 
   test('OpenAI Agents SDK interruptions, Claude Agent SDK callbacks and an MCP client', async () => {
@@ -64,7 +64,7 @@ describe('agent framework helpers', () => {
     const rejected: string[] = [];
     const state = { approve: (i: any) => approved.push(i.rawItem.name), reject: (i: any) => rejected.push(i.rawItem.name) };
     const args = JSON.stringify({ iban: 'TR330006100519786457841326', amount: '20.00' });
-    await approveInterruptionsWithTouchQue({ interruptions: [{ rawItem: { name: 'pay', arguments: args } }, { rawItem: { name: 'refund', arguments: args } }, { rawItem: { name: 'other', arguments: '{}' } }], state },
+    await approveInterruptionsWithTouchque({ interruptions: [{ rawItem: { name: 'pay', arguments: args } }, { rawItem: { name: 'refund', arguments: args } }, { rawItem: { name: 'other', arguments: '{}' } }], state },
       { pay: policy(true), refund: policy(false) });
     expect([approved, rejected]).toEqual([['pay'], ['refund']]);
 

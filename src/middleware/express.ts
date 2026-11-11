@@ -1,25 +1,25 @@
 // src/middleware/express.ts
 // One line per protected route:
 //
-//   app.post('/transfer', requireTouchQue('SEND_MONEY'), handler)
+//   app.post('/transfer', requireTouchque('SEND_MONEY'), handler)
 //
 // Until the user approves on their phone the middleware answers
 // 202 { touchque: step, token }. Your page shows the step in its own design
 // (the matching number, or the QR code for first-time linking) and sends the
-// same request again with header `X-TouchQue-Token: <token>` every ~1.5 s
+// same request again with header `X-Touchque-Token: <token>` every ~1.5 s
 // (@touchque/web's touchqueFetch does exactly this). Once approved the handler
 // runs ONCE, with `req.touchque` = { requestId, assurance, approvalProof, … }.
 
 import type { Request, Response, NextFunction } from 'express';
-import { TouchQue, getDefaultClient } from '../index';
+import { Touchque, getDefaultClient } from '../index';
 import type { LoginRequestDetails } from '../types';
 import { runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions } from '../guard';
 
 type MaybePromise<T> = T | Promise<T>;
 
-export interface TouchQueMiddlewareOptions {
+export interface TouchqueMiddlewareOptions {
   /** Client to use (default: one built from TQ_API_KEY / TQ_API_SECRET). */
-  client?: TouchQue;
+  client?: Touchque;
   /**
    * Who is approving. Default: `req.user.email || req.user.id || req.user.username`
    * (set by your auth). For the login step, return the user who just passed
@@ -30,7 +30,7 @@ export interface TouchQueMiddlewareOptions {
   details?: (req: Request) => MaybePromise<LoginRequestDetails | undefined>;
   /** Your own transaction id, bound to the approval. */
   referenceId?: (req: Request) => MaybePromise<string | undefined>;
-  /** For your TouchQue Actions only (`event.context`): roles, plan, amount… Never shown on the phone. */
+  /** For your Touchque Actions only (`event.context`): roles, plan, amount… Never shown on the phone. */
   context?: (req: Request) => MaybePromise<Record<string, unknown> | undefined>;
   /** @deprecated use `user` */
   getUserId?: (req: Request) => string | undefined;
@@ -42,8 +42,8 @@ export interface TouchQueMiddlewareOptions {
   timeout?: number;
   /**
    * Silent sign-ins (default off). When on, a new attempt whose browser sent
-   * its device-bound key proof (`X-TouchQue-Browser`, added by `@touchque/web`
-   * with `browserKey: true`) first asks TouchQue whether anything about it is
+   * its device-bound key proof (`X-Touchque-Browser`, added by `@touchque/web`
+   * with `browserKey: true`) first asks Touchque whether anything about it is
    * new. If nothing is, your handler runs at once with no push
    * (`touchque.assurance.method === 'silent'`, `touchque.reasons`). Otherwise,
    * and on any error, the usual push starts and its approval makes the
@@ -60,25 +60,25 @@ const defaultUser = (req: Request): string | undefined => {
 };
 
 /**
- * Protects a route with TouchQue approval.
+ * Protects a route with Touchque approval.
  *
  * @example
  * app.post('/transfer',
- *   requireTouchQue('SEND_MONEY', { details: (req) => ({ Amount: `${req.body.amount} EUR`, To: req.body.iban }) }),
+ *   requireTouchque('SEND_MONEY', { details: (req) => ({ Amount: `${req.body.amount} EUR`, To: req.body.iban }) }),
  *   (req, res) => res.json({ ok: true }));
  */
-export function requireTouchQue(action: string, options?: TouchQueMiddlewareOptions): (req: Request, res: Response, next: NextFunction) => Promise<void>;
+export function requireTouchque(action: string, options?: TouchqueMiddlewareOptions): (req: Request, res: Response, next: NextFunction) => Promise<void>;
 /** @deprecated pass the client as `options.client` (or rely on the environment) */
-export function requireTouchQue(client: TouchQue, action: string, options?: TouchQueMiddlewareOptions): (req: Request, res: Response, next: NextFunction) => Promise<void>;
-export function requireTouchQue(
-  a: string | TouchQue,
-  b?: string | TouchQueMiddlewareOptions,
-  c?: TouchQueMiddlewareOptions,
+export function requireTouchque(client: Touchque, action: string, options?: TouchqueMiddlewareOptions): (req: Request, res: Response, next: NextFunction) => Promise<void>;
+export function requireTouchque(
+  a: string | Touchque,
+  b?: string | TouchqueMiddlewareOptions,
+  c?: TouchqueMiddlewareOptions,
 ) {
   const legacy = typeof a !== 'string';
   const action = (legacy ? b : a) as string;
-  const options: TouchQueMiddlewareOptions = (legacy ? c : (b as TouchQueMiddlewareOptions)) || {};
-  const explicitClient = legacy ? (a as TouchQue) : options.client;
+  const options: TouchqueMiddlewareOptions = (legacy ? c : (b as TouchqueMiddlewareOptions)) || {};
+  const explicitClient = legacy ? (a as Touchque) : options.client;
   const userOf = options.user || options.getUserId || defaultUser;
   const detailsOf = options.details || options.getDetails;
   const refOf = options.referenceId || options.getReferenceId;

@@ -1,7 +1,7 @@
 // src/resources/ActionTypes.ts
 // Action types ("LOGIN", "SEND_MONEY", …) — what a user is asked to approve.
 // Define them from code at start-up instead of clicking them into the Dashboard.
-// (Before 4.0 this was `tq.actions`; `tq.actions` is TouchQue Actions now.)
+// (Before 4.0 this was `tq.actions`; `tq.actions` is Touchque Actions now.)
 
 import { HttpClient } from '../core/HttpClient';
 

@@ -1,11 +1,11 @@
 // src/core/HttpClient.ts
-// The heart of the SDK — all HTTP communication with the TouchQue API.
+// The heart of the SDK — all HTTP communication with the Touchque API.
 // Every request is signed with HMAC-SHA256 (the developer never sees this).
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import * as crypto from 'crypto';
-import { TouchQueConfig } from '../types';
-import { TouchQueAPIError, TouchQueConfigError, TouchQueNetworkError, apiError } from '../errors';
+import { TouchqueConfig } from '../types';
+import { TouchqueAPIError, TouchqueConfigError, TouchqueNetworkError, apiError } from '../errors';
 
 const TEN_MB = 10 * 1024 * 1024;
 
@@ -15,18 +15,18 @@ function assertSafeBaseUrl(baseUrl: string): void {
   try {
     url = new URL(baseUrl);
   } catch {
-    throw new TouchQueConfigError(`baseUrl is not a valid URL: ${baseUrl}`);
+    throw new TouchqueConfigError(`baseUrl is not a valid URL: ${baseUrl}`);
   }
   if (url.protocol === 'https:') return;
   if (url.protocol === 'http:') {
     const host = url.hostname.toLowerCase();
     if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return;
-    throw new TouchQueConfigError(
+    throw new TouchqueConfigError(
       `Refusing to use a plaintext http:// baseUrl for "${url.hostname}". ` +
         `The API key and request signature would be sent in the clear — use https://.`,
     );
   }
-  throw new TouchQueConfigError(`baseUrl must be http(s): ${baseUrl}`);
+  throw new TouchqueConfigError(`baseUrl must be http(s): ${baseUrl}`);
 }
 
 /** Deterministic query string: keys sorted, values URL-encoded, `?`-prefixed (or ''). */
@@ -47,7 +47,7 @@ export interface SdkLog {
 
 const SILENT: SdkLog = { warn: () => {}, error: () => {} };
 
-export function sdkLog(config: Pick<TouchQueConfig, 'logger' | 'debug'>): SdkLog {
+export function sdkLog(config: Pick<TouchqueConfig, 'logger' | 'debug'>): SdkLog {
   const target = config.logger ?? (config.debug ? console : null);
   if (!target) return SILENT;
   return {
@@ -70,15 +70,15 @@ export class HttpClient {
   /** Internal: where the SDK reports its own problems (silent by default). */
   readonly log: SdkLog;
 
-  constructor(config: TouchQueConfig) {
+  constructor(config: TouchqueConfig) {
     if (!config.apiKey || typeof config.apiKey !== 'string') {
-      throw new TouchQueConfigError('apiKey is required and must be a string');
+      throw new TouchqueConfigError('apiKey is required and must be a string');
     }
     if (!config.apiSecret || typeof config.apiSecret !== 'string') {
-      throw new TouchQueConfigError('apiSecret is required and must be a string');
+      throw new TouchqueConfigError('apiSecret is required and must be a string');
     }
     if (!config.apiKey.startsWith('tq_')) {
-      throw new TouchQueConfigError(
+      throw new TouchqueConfigError(
         'apiKey must start with "tq_". Did you accidentally swap apiKey and apiSecret?',
       );
     }
@@ -191,15 +191,15 @@ export class HttpClient {
     }
   }
 
-  private handleError(error: unknown): TouchQueAPIError | TouchQueNetworkError {
+  private handleError(error: unknown): TouchqueAPIError | TouchqueNetworkError {
     if (axios.isAxiosError(error)) {
       const axiosErr = error as AxiosError;
       if (!axiosErr.response) {
         // No HTTP response was ever received — connection refused, DNS
         // failure, client-side timeout, etc. Previously this fell through
-        // to `status: 500` below and was indistinguishable from TouchQue
+        // to `status: 500` below and was indistinguishable from Touchque
         // itself returning a real 500.
-        return new TouchQueNetworkError(axiosErr.message, axiosErr.code);
+        return new TouchqueNetworkError(axiosErr.message, axiosErr.code);
       }
       const status = axiosErr.response.status;
       const data = (axiosErr.response.data as Record<string, unknown>) || {};
@@ -217,7 +217,7 @@ export class HttpClient {
         feature: typeof data.feature === 'string' ? data.feature : undefined,
       });
     }
-    return new TouchQueAPIError(500, {
+    return new TouchqueAPIError(500, {
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }

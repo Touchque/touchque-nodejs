@@ -2,34 +2,34 @@
 // A person approves an AI agent's tool call on their phone before it runs,
 // in whichever agent framework the agent is built with. One rule, a policy,
 // says who approves (user), as which action type, and what the phone shows
-// (authorizationDetails drawn from the tool's arguments); TouchQue draws the
+// (authorizationDetails drawn from the tool's arguments); Touchque draws the
 // rows, the person types the number the conversation shows and confirms with
 // Face ID, and the call runs only once they approved. The approval token
 // (single use, bound to exactly what was approved) is there for the service
 // that executes: currentApproval() inside the tool, or the MCP request's _meta.
 //
-//   const pay = withTouchQueApproval(async ({ iban, amount }) => bank.pay(iban, amount, currentApproval()!.approvalToken), {
+//   const pay = withTouchqueApproval(async ({ iban, amount }) => bank.pay(iban, amount, currentApproval()!.approvalToken), {
 //     agent, user: 'ada@acme.com', type: 'PAY_INVOICE',
 //     details: ({ iban, amount }) => [{ type: 'payment_initiation', instructedAmount: { currency: 'TRY', amount }, creditorAccount: { iban } }],
-//     onChallenge: (s) => reply(`Type ${s.challengeCode} in the TouchQue app.`),
+//     onChallenge: (s) => reply(`Type ${s.challengeCode} in the Touchque app.`),
 //   });
 //
 // The wrapped function keeps its arguments, so it drops into LangChain's
 // tool(), the Vercel AI SDK's execute, LlamaIndex's FunctionTool and the
 // OpenAI Agents SDK's tool({ execute }) unchanged. For frameworks with their
-// own approval step: approveInterruptionsWithTouchQue (OpenAI Agents SDK),
+// own approval step: approveInterruptionsWithTouchque (OpenAI Agents SDK),
 // touchqueCanUseTool and touchquePreToolUseHook (Claude Agent SDK),
 // guardMcpClient (any MCP client).
 
 import { AsyncLocalStorage } from 'async_hooks';
 import type { AuthorizationDetail } from './approvalToken';
-import type { AgentApprovalParams, AgentApprovalState, TouchQueAgent } from './agent';
-import { TouchQueApprovalError, TouchQueTimeoutError } from './errors';
+import type { AgentApprovalParams, AgentApprovalState, TouchqueAgent } from './agent';
+import { TouchqueApprovalError, TouchqueTimeoutError } from './errors';
 
 type Maybe<T, A> = T | ((args: A, toolName: string) => T);
 
 export interface ApprovalPolicy<A = any> {
-  agent: TouchQueAgent;
+  agent: TouchqueAgent;
   /** The person the agent acts for: their phone approves. */
   user: Maybe<string, A>;
   /** One of the agent's allowed action types. */
@@ -50,7 +50,7 @@ export interface ApprovalPolicy<A = any> {
 
 const store = new AsyncLocalStorage<AgentApprovalState>();
 
-/** Inside a tool wrapped by withTouchQueApproval: the approval it runs under (its approvalToken for the service). */
+/** Inside a tool wrapped by withTouchqueApproval: the approval it runs under (its approvalToken for the service). */
 export function currentApproval(): AgentApprovalState | undefined {
   return store.getStore();
 }
@@ -59,7 +59,7 @@ const pick = <T, A>(v: Maybe<T, A>, args: A, toolName: string): T => (typeof v =
 
 /**
  * Asks the person's phone and waits: the approved state (with approvalToken),
- * or TouchQueApprovalError (rejected, blocked, expired…) / TouchQueTimeoutError.
+ * or TouchqueApprovalError (rejected, blocked, expired…) / TouchqueTimeoutError.
  */
 export async function requireAgentApproval<A>(policy: ApprovalPolicy<A>, args: A, toolName = 'tool'): Promise<AgentApprovalState> {
   const asked = await policy.agent.requestApproval({
@@ -77,7 +77,7 @@ export async function requireAgentApproval<A>(policy: ApprovalPolicy<A>, args: A
 }
 
 /** The function runs only after the person approved on the phone; currentApproval() is set while it runs. */
-export function withTouchQueApproval<A, R, Rest extends unknown[]>(
+export function withTouchqueApproval<A, R, Rest extends unknown[]>(
   fn: (args: A, ...rest: Rest) => R | Promise<R>,
   policy: ApprovalPolicy<A>,
   toolName = fn.name || 'tool',
@@ -103,7 +103,7 @@ const parseArgs = (raw: unknown): any => {
  * approves or rejects it on the run state. Returns the state to resume with
  * run(agent, state). Tools without a policy are left for you.
  */
-export async function approveInterruptionsWithTouchQue(
+export async function approveInterruptionsWithTouchque(
   result: { interruptions?: any[]; state: { approve(item: any): void; reject(item: any): void } },
   policies: Record<string, ApprovalPolicy>,
 ): Promise<typeof result.state> {
@@ -116,7 +116,7 @@ export async function approveInterruptionsWithTouchQue(
       await requireAgentApproval(policy, parseArgs(raw.arguments ?? item.arguments), name);
       result.state.approve(item);
     } catch (err) {
-      if (!(err instanceof TouchQueApprovalError) && !(err instanceof TouchQueTimeoutError)) throw err;
+      if (!(err instanceof TouchqueApprovalError) && !(err instanceof TouchqueTimeoutError)) throw err;
       result.state.reject(item);
     }
   }
@@ -136,7 +136,7 @@ export function touchqueCanUseTool(policies: Record<string, ApprovalPolicy>, opt
       const approval = await requireAgentApproval(policy, input, toolName);
       return { behavior: 'allow', updatedInput: options.tokenField ? { ...input, [options.tokenField]: approval.approvalToken } : input };
     } catch (err) {
-      return { behavior: 'deny', message: `The person did not approve ${toolName} on their phone (${(err as TouchQueApprovalError).status || (err as Error).message})` };
+      return { behavior: 'deny', message: `The person did not approve ${toolName} on their phone (${(err as TouchqueApprovalError).status || (err as Error).message})` };
     }
   };
 }
@@ -151,7 +151,7 @@ export function touchquePreToolUseHook(policies: Record<string, ApprovalPolicy>)
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: d.behavior === 'allow' ? 'allow' : 'deny',
-        permissionDecisionReason: d.behavior === 'allow' ? 'Approved on the person\'s phone (TouchQue)' : d.message,
+        permissionDecisionReason: d.behavior === 'allow' ? 'Approved on the person\'s phone (Touchque)' : d.message,
       },
     };
   };

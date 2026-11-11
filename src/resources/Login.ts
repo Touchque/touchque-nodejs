@@ -1,7 +1,7 @@
 // src/resources/Login.ts
 // Login request management — request 2FA, check status, wait for approval
 //
-// This is the core of TouchQue: any action that needs 2FA confirmation
+// This is the core of Touchque: any action that needs 2FA confirmation
 // (login, withdraw, transfer, purchase, etc.) uses these methods.
 
 import { HttpClient, describeError } from '../core/HttpClient';
@@ -16,7 +16,7 @@ import {
   VerifyChallenge,
   SecurityChanges,
 } from '../types';
-import { TouchQueTimeoutError, TouchQueRejectedError, TouchQuePasskeyRequiredError } from '../errors';
+import { TouchqueTimeoutError, TouchqueRejectedError, TouchquePasskeyRequiredError } from '../errors';
 
 /** Dates go out as ISO 8601; strings and epoch milliseconds as given. */
 function securityChangesBody(changes: SecurityChanges): Record<string, string | number> {
@@ -31,7 +31,7 @@ export class Login {
   constructor(private readonly http: HttpClient) {}
 
   /**
-   * Request 2FA confirmation from a user's TouchQue app.
+   * Request 2FA confirmation from a user's Touchque app.
    *
    * The user will receive a push notification on their device.
    * They can then approve or reject the request.
@@ -39,7 +39,7 @@ export class Login {
    * Built-in `type` values:
    * - `'LOGIN'` — User is logging in
    * - `'DISABLE_2FA'` — User is disabling 2FA
-   * - Custom action type IDs or slugs configured in your TouchQue Dashboard
+   * - Custom action type IDs or slugs configured in your Touchque Dashboard
    *
    * @example
    * // Basic login verification
@@ -128,7 +128,7 @@ export class Login {
   /**
    * Use an approved request exactly once. The first call on a CONFIRMED request
    * wins atomically; every later call (a replayed token, a retried form post)
-   * throws `TouchQueAPIError` with `code: 'already_used'` (409). Compare the
+   * throws `TouchqueAPIError` with `code: 'already_used'` (409). Compare the
    * answer's user, type, referenceId and details with what you asked for, or
    * use `tq.complete()`, which does both.
    *
@@ -146,11 +146,11 @@ export class Login {
    * This is a convenience method that polls the status endpoint
    * until the request is approved, rejected, or times out.
    *
-   * **This is the recommended way to integrate TouchQue into your routes.**
+   * **This is the recommended way to integrate Touchque into your routes.**
    *
-   * @throws {TouchQueRejectedError} If the user rejects the request
-   * @throws {TouchQueTimeoutError} If the request times out (user didn't respond)
-   * @throws {TouchQuePasskeyRequiredError} If the request now needs a passkey
+   * @throws {TouchqueRejectedError} If the user rejects the request
+   * @throws {TouchqueTimeoutError} If the request times out (user didn't respond)
+   * @throws {TouchquePasskeyRequiredError} If the request now needs a passkey
    *   (`reason: 'step_up'`: the user approved on the phone during a call);
    *   finish it in the browser with `@touchque/web` `passkeys.approveLogin({ requestId })`
    *
@@ -172,9 +172,9 @@ export class Login {
    *     proceedWithAction();
    *   }
    * } catch (err) {
-   *   if (err instanceof TouchQueRejectedError) {
+   *   if (err instanceof TouchqueRejectedError) {
    *     // ❌ User rejected — cancel the action
-   *   } else if (err instanceof TouchQueTimeoutError) {
+   *   } else if (err instanceof TouchqueTimeoutError) {
    *     // ⏰ User didn't respond in time
    *   }
    * }
@@ -192,17 +192,17 @@ export class Login {
       }
 
       if (status === 'REJECTED') {
-        throw new TouchQueRejectedError(options.requestId);
+        throw new TouchqueRejectedError(options.requestId);
       }
 
       if (status === 'EXPIRED') {
-        throw new TouchQueTimeoutError(options.requestId, timeout);
+        throw new TouchqueTimeoutError(options.requestId, timeout);
       }
 
       // Vishing Shield: the phone was on a call at the tap, so the request now
       // waits for a passkey in the browser; polling would only run into the timeout.
       if (status === 'PENDING' && requiresPasskey) {
-        throw new TouchQuePasskeyRequiredError(options.requestId, 'step_up');
+        throw new TouchquePasskeyRequiredError(options.requestId, 'step_up');
       }
 
       // Wait before next poll
@@ -210,7 +210,7 @@ export class Login {
     }
 
     // Timeout reached
-    throw new TouchQueTimeoutError(options.requestId, timeout);
+    throw new TouchqueTimeoutError(options.requestId, timeout);
   }
 
   /**
@@ -218,9 +218,9 @@ export class Login {
    *
    * Perfect for protecting any action with a single function call.
    *
-   * @throws {TouchQueRejectedError} User rejected
-   * @throws {TouchQueTimeoutError} User didn't respond in time
-   * @throws {TouchQuePasskeyRequiredError} A passkey must approve it (policy, or the
+   * @throws {TouchqueRejectedError} User rejected
+   * @throws {TouchqueTimeoutError} User didn't respond in time
+   * @throws {TouchquePasskeyRequiredError} A passkey must approve it (policy, or the
    *   user tapped Approve during a call)
    *
    * With number matching (your `requireNumberMatch`, a workspace policy or
@@ -248,7 +248,7 @@ export class Login {
     // Step 1: Send the 2FA request
     const loginReq = await this.request(requestOptions);
     // Passkey-only (phishing-resistant policy): nothing was pushed, so don't poll for 30 s.
-    if (loginReq.requiresPasskey) throw new TouchQuePasskeyRequiredError(loginReq.requestId);
+    if (loginReq.requiresPasskey) throw new TouchquePasskeyRequiredError(loginReq.requestId);
 
     // Step 1b: the number to show, before waiting (the phone asks for it).
     if (onChallenge) {
@@ -262,10 +262,10 @@ export class Login {
       try {
         const out = onChallenge(challenge) as Promise<unknown> | undefined;
         if (out && typeof out.catch === 'function') {
-          out.catch((err: unknown) => this.http.log.warn(`[TouchQue] onChallenge failed: ${describeError(err)}`));
+          out.catch((err: unknown) => this.http.log.warn(`[Touchque] onChallenge failed: ${describeError(err)}`));
         }
       } catch (err) {
-        this.http.log.warn(`[TouchQue] onChallenge failed: ${describeError(err)}`);
+        this.http.log.warn(`[Touchque] onChallenge failed: ${describeError(err)}`);
       }
     }
 
@@ -297,7 +297,7 @@ export class Login {
 
   /**
    * Report a request you later learned was fraud — a chargeback, a confirmed
-   * account takeover, a scam the user was talked into. TouchQue's risk engine
+   * account takeover, a scam the user was talked into. Touchque's risk engine
    * learns from it (it is the strongest signal it gets) and the report is
    * kept in your audit log. The request's status does not change. Safe to
    * call more than once: a repeat answers `alreadyReported: true`.

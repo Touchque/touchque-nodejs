@@ -4,12 +4,12 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
-import { TouchQue, TouchQueAPIError, TouchQueConfigError, isAssistCheckPassed } from '../index';
+import { Touchque, TouchqueAPIError, TouchqueConfigError, isAssistCheckPassed } from '../index';
 
 describe('Assist against the fake API', () => {
   let fake: ChildProcess;
   let base = '';
-  let tq: TouchQue;
+  let tq: Touchque;
   const control = (p: string, body: object) => fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
   beforeAll(async () => {
     fake = spawn(process.execPath, [resolve(__dirname, '../../testing/fake-touchque-api.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -18,7 +18,7 @@ describe('Assist against the fake API', () => {
       fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
     });
     base = `http://127.0.0.1:${port}`;
-    tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+    tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
     await control('/__test/link', { user: 'ayse@acme.com' });
   });
   afterAll(() => { fake?.kill(); });
@@ -57,13 +57,13 @@ describe('Assist against the fake API', () => {
     const s = await tq.assist.open({ externalUsername: 'can@acme.com', agent: { name: 'Deniz Kaya' } });
     expect(s.phone).toBe(false);
     const err = await tq.assist.verify(s.id, { action: 'new_phone' }).catch((e) => e);
-    expect(err).toBeInstanceOf(TouchQueAPIError);
+    expect(err).toBeInstanceOf(TouchqueAPIError);
     expect(err).toMatchObject({ status: 409, code: 'no_phone', data: { route: 'never_locked_out' } });
   });
 
   test('argument checks', async () => {
-    await expect(tq.assist.open({ externalUsername: '', agent: { name: 'x' } })).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(tq.assist.list({})).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(tq.assist.verify('id', { action: '' })).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(tq.assist.open({ externalUsername: '', agent: { name: 'x' } })).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(tq.assist.list({})).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(tq.assist.verify('id', { action: '' })).rejects.toBeInstanceOf(TouchqueConfigError);
   });
 });

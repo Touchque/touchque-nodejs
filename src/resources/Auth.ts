@@ -17,7 +17,7 @@ export class Auth {
   /**
    * Generate a new setup secret for a user.
    * Show this secret to the user ONCE (e.g. as a QR code) so they can
-   * link their TouchQue app.
+   * link their Touchque app.
    *
    * The secret expires after 60 seconds if not used (scanned by the mobile app).
    * After expiry, calling this method again will automatically rotate the secret.

@@ -1,5 +1,5 @@
 // AI agents in the Node SDK: management calls send what the shared vectors
-// (fixtures/agent-vectors.json) say, and TouchQueAgent signs in with its own
+// (fixtures/agent-vectors.json) say, and TouchqueAgent signs in with its own
 // key against the shared fake API, which checks the private_key_jwt assertion
 // and the DPoP proofs like the real API.
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
@@ -8,14 +8,14 @@ import { createHash, generateKeyPairSync, createPrivateKey } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
-  TouchQue, TouchQueAgent, TouchQueAPIError, TouchQueApprovalError, TouchQueApprovalMismatchError, TouchQueConfigError,
+  Touchque, TouchqueAgent, TouchqueAPIError, TouchqueApprovalError, TouchqueApprovalMismatchError, TouchqueConfigError,
   generateAgentKey, jwkThumbprint, matchesAuthorizationDetails, verifyApprovalTokenWith,
 } from '../index';
 
 const vectors = JSON.parse(readFileSync(resolve(__dirname, '../../fixtures/agent-vectors.json'), 'utf8'));
 let fake: ChildProcess;
 let base = '';
-let tq: TouchQue;
+let tq: Touchque;
 
 beforeAll(async () => {
   fake = spawn(process.execPath, [resolve(__dirname, '../../testing/fake-touchque-api.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -24,7 +24,7 @@ beforeAll(async () => {
     fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
   });
   base = `http://127.0.0.1:${port}`;
-  tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+  tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
 });
 afterAll(() => { fake?.kill(); });
 
@@ -100,18 +100,18 @@ describe('tq.agents management calls', () => {
   });
 
   test('a private key is refused before it leaves the process', async () => {
-    await expect(tq.agents.create({ name: 'x', allowedTypes: ['LOGIN'], publicKey: k1.privateJwk as any })).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(tq.agents.create({ name: 'x', allowedTypes: ['LOGIN'], publicKey: k1.privateJwk as any })).rejects.toBeInstanceOf(TouchqueConfigError);
   });
 });
 
-describe('TouchQueAgent', () => {
+describe('TouchqueAgent', () => {
   test('signs in with its own key (JWK, JSON, PEM; ES256 and EdDSA) and calls with DPoP', async () => {
     for (const alg of ['ES256', 'EdDSA'] as const) {
       const key = generateAgentKey(alg);
       const created = await tq.agents.create({ name: `agent ${alg}`, allowedTypes: ['LOGIN'], publicKey: key.publicJwk });
       const pem = createPrivateKey({ key: key.privateJwk as any, format: 'jwk' }).export({ format: 'pem', type: 'pkcs8' }).toString();
       for (const privateKey of [key.privateJwk, JSON.stringify(key.privateJwk), pem]) {
-        const agent = new TouchQueAgent({ agentId: created.id, privateKey, baseUrl: base });
+        const agent = new TouchqueAgent({ agentId: created.id, privateKey, baseUrl: base });
         const me = await agent.me();
         expect(me.agent).toMatchObject({ id: created.id, allowedTypes: ['LOGIN'] });
         expect(me.scope).toBe('agent:read approvals:request approvals:read vault:read');
@@ -124,7 +124,7 @@ describe('TouchQueAgent', () => {
   test('reuses its token until it is close to expiry', async () => {
     const key = generateAgentKey();
     const created = await tq.agents.create({ name: 'reuse', allowedTypes: ['LOGIN'], publicKey: key.publicJwk });
-    const agent = new TouchQueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
+    const agent = new TouchqueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
     const before = (await calls()).filter((c) => c.path === '/agents/token').length;
     await Promise.all([agent.me(), agent.me(), agent.me()]);
     await agent.me();
@@ -134,20 +134,20 @@ describe('TouchQueAgent', () => {
   test('a suspended agent, a stranger\'s key and a paused workspace are refused with the reason', async () => {
     const key = generateAgentKey();
     const created = await tq.agents.create({ name: 'refused', allowedTypes: ['LOGIN'], publicKey: key.publicJwk });
-    const agent = new TouchQueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
+    const agent = new TouchqueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
     await agent.me();
     await tq.agents.suspend(created.id, 'looping');
     const blocked = await agent.me().catch((e) => e);
-    expect(blocked).toBeInstanceOf(TouchQueAPIError);
+    expect(blocked).toBeInstanceOf(TouchqueAPIError);
     expect(blocked).toMatchObject({ status: 403, code: 'agent_blocked' });
     expect(blocked.data.reason).toBe('suspended');
-    const fresh = await new TouchQueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base }).me().catch((e) => e);
+    const fresh = await new TouchqueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base }).me().catch((e) => e);
     expect(fresh).toMatchObject({ code: 'unauthorized_client' });
     expect(fresh.data.reason).toBe('suspended');
     await tq.agents.resume(created.id);
 
     const stranger = generateAgentKey();
-    const spoof = await new TouchQueAgent({ agentId: created.id, privateKey: stranger.privateJwk, kid: key.publicJwk.kid, baseUrl: base }).me().catch((e) => e);
+    const spoof = await new TouchqueAgent({ agentId: created.id, privateKey: stranger.privateJwk, kid: key.publicJwk.kid, baseUrl: base }).me().catch((e) => e);
     expect(spoof).toMatchObject({ status: 401, code: 'invalid_client' });
 
     await tq.agents.setKillSwitch(true, 'incident');
@@ -157,11 +157,11 @@ describe('TouchQueAgent', () => {
   });
 
   test('configuration errors are caught locally', () => {
-    expect(() => new TouchQueAgent({ agentId: 'nope', privateKey: generateAgentKey().privateJwk })).toThrow(TouchQueConfigError);
-    expect(() => new TouchQueAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: 'not a key' })).toThrow(TouchQueConfigError);
+    expect(() => new TouchqueAgent({ agentId: 'nope', privateKey: generateAgentKey().privateJwk })).toThrow(TouchqueConfigError);
+    expect(() => new TouchqueAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: 'not a key' })).toThrow(TouchqueConfigError);
     const p384 = generateKeyPairSync('ec', { namedCurve: 'P-384' }).privateKey;
-    expect(() => new TouchQueAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: p384 })).toThrow(/P-256/);
-    expect(() => new TouchQueAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: generateAgentKey().privateJwk, baseUrl: 'http://api.example.com' })).toThrow(/https/);
+    expect(() => new TouchqueAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: p384 })).toThrow(/P-256/);
+    expect(() => new TouchqueAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: generateAgentKey().privateJwk, baseUrl: 'http://api.example.com' })).toThrow(/https/);
   });
 });
 
@@ -170,7 +170,7 @@ describe('approval tokens and matching (shared vectors)', () => {
   test('a token signed by the published key verifies; tampered, wrong type, expired or another workspace do not', () => {
     const at = v.verifyAt * 1000;
     expect(verifyApprovalTokenWith(v.token, v.jwks, { now: at, audience: v.audience })).toMatchObject({ sub: v.claims.sub, act: v.claims.act });
-    expect(() => verifyApprovalTokenWith(v.tampered, v.jwks, { now: at, audience: v.audience })).toThrow(TouchQueApprovalMismatchError);
+    expect(() => verifyApprovalTokenWith(v.tampered, v.jwks, { now: at, audience: v.audience })).toThrow(TouchqueApprovalMismatchError);
     expect(() => verifyApprovalTokenWith(v.wrongType, v.jwks, { now: at, audience: v.audience })).toThrow(/typ/);
     expect(() => verifyApprovalTokenWith(v.token, v.jwks, { now: (v.claims.exp + 60) * 1000, audience: v.audience })).toThrow(/expired/);
     expect(() => verifyApprovalTokenWith(v.token, v.jwks, { now: at, audience: 'touchque:workspace:other' })).toThrow(/another workspace/);
@@ -191,14 +191,14 @@ describe('approval tokens and matching (shared vectors)', () => {
 describe('agent approvals against the fake API', () => {
   const PAYMENT = vectors.approvalToken.claims.authorization_details[0];
   const user = 'agent-approvals@example.com';
-  let agent: TouchQueAgent;
+  let agent: TouchqueAgent;
 
   beforeAll(async () => {
     await fetch(`${base}/__test/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user }) });
     await tq.actionTypes.define('PAY_INVOICE', { critical: false });
     const key = generateAgentKey();
     const created = await tq.agents.create({ name: 'Invoice bot', allowedTypes: ['PAY_INVOICE'], publicKey: key.publicJwk });
-    agent = new TouchQueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
+    agent = new TouchqueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
   });
 
   const approve = (id: string) => fetch(`${base}/__test/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
@@ -219,8 +219,8 @@ describe('agent approvals against the fake API', () => {
     await expect(tq.agents.verifyApprovalToken(token, { audience: 'touchque:workspace:other' })).rejects.toThrow(/another workspace/);
 
     // A mismatch is refused before anything is used...
-    await expect(tq.agents.redeemApproval(token, { authorizationDetails: { ...PAYMENT, instructedAmount: { currency: 'TRY', amount: '5000.00' } } })).rejects.toBeInstanceOf(TouchQueApprovalMismatchError);
-    await expect(tq.agents.redeemApproval(token, { user: 'someone@example.com' })).rejects.toBeInstanceOf(TouchQueApprovalMismatchError);
+    await expect(tq.agents.redeemApproval(token, { authorizationDetails: { ...PAYMENT, instructedAmount: { currency: 'TRY', amount: '5000.00' } } })).rejects.toBeInstanceOf(TouchqueApprovalMismatchError);
+    await expect(tq.agents.redeemApproval(token, { user: 'someone@example.com' })).rejects.toBeInstanceOf(TouchqueApprovalMismatchError);
     // ...so the right expectation still redeems it, once.
     const approval = await tq.agents.redeemApproval(token, { user, type: 'PAY_INVOICE', authorizationDetails: { type: 'payment_initiation', instructedAmount: { currency: 'try', amount: '500' }, creditorAccount: { iban: 'TR33 0006 1005 1978 6457 8413 26' } } });
     expect(approval).toMatchObject({ id: ask.approvalId, externalUsername: user, agent: { id: agent.agentId } });
@@ -234,7 +234,7 @@ describe('agent approvals against the fake API', () => {
     expect(ask.challengeCode).toBeUndefined();
     await fetch(`${base}/__test/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: ask.approvalId }) });
     const err = await agent.waitForApproval(ask.approvalId, { intervalMs: 500 }).catch((e) => e);
-    expect(err).toBeInstanceOf(TouchQueApprovalError);
+    expect(err).toBeInstanceOf(TouchqueApprovalError);
     expect(err.status).toBe('rejected');
     const refused = await agent.requestApproval({ user, type: 'SEND_MONEY', authorizationDetails: [PAYMENT] }).catch((e) => e);
     expect(refused).toMatchObject({ status: 403, code: 'type_not_allowed' });
@@ -250,7 +250,7 @@ describe('mandates against the fake API', () => {
     await tq.actionTypes.define('PAY_INVOICE', { critical: false });
     const key = generateAgentKey();
     const created = await tq.agents.create({ name: 'Mandate bot', allowedTypes: ['PAY_INVOICE'], publicKey: key.publicJwk });
-    const agent = new TouchQueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
+    const agent = new TouchqueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
     const mandate = await agent.requestMandate({ user, type: 'PAY_INVOICE', maxCount: 2, maxTotal: { currency: 'TRY', amount: '1000' }, recipients: ['TR33 0006 1005 1978 6457 8413 26'], validFor: 3600 });
     expect(mandate).toMatchObject({ status: 'pending', challengeCode: '47', maxCount: 2 });
     expect((await calls()).at(-1)!.body).toMatchObject({ externalUsername: user, maxCount: 2, maxTotal: { currency: 'TRY', amount: '1000' } });
@@ -274,7 +274,7 @@ describe('the token vault against the fake API', () => {
   test('the partner deposits a person\'s tokens; only the agents a connection names get the access token', async () => {
     const key = generateAgentKey();
     const created = await tq.agents.create({ name: 'Calendar bot', allowedTypes: ['PAY_INVOICE'], publicKey: key.publicJwk });
-    const agent = new TouchQueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
+    const agent = new TouchqueAgent({ agentId: created.id, privateKey: key.privateJwk, baseUrl: base });
     const conn = await tq.agents.vault.putConnection('google', { provider: 'google', clientId: 'acme.apps.googleusercontent.com', clientSecret: 'g-secret', agentIds: [created.id] });
     expect(conn).toMatchObject({ name: 'google', provider: 'google', hasClientSecret: true, agentIds: [created.id] });
     const account = await tq.agents.vault.deposit('google', 'jane@example.com', { accessToken: 'ya29.jane', refreshToken: '1//jane', expiresIn: 3599, scope: 'calendar.readonly' });

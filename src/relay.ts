@@ -29,13 +29,13 @@
 // Pre-auth routes are rate limited per IP and per username by default
 // (`rateLimit`, the same FixedWindowLimiter). Fetch has no socket address:
 // say where the end user's address comes from (`ip` or `trustedProxyHops`, as
-// for withTouchQue). Without one the per-IP limits are skipped (the
+// for withTouchque). Without one the per-IP limits are skipped (the
 // per-username ones stay) and no client IP is sent to Touchque.
 //
 // JSON bodies are read only with Content-Type application/json, at most 100 KiB.
 
-import { TouchQue } from './index';
-import { TouchQueRejectedError, TouchQueTimeoutError, TouchQuePasskeyRequiredError, TouchQueAPIError } from './errors';
+import { Touchque } from './index';
+import { TouchqueRejectedError, TouchqueTimeoutError, TouchquePasskeyRequiredError, TouchqueAPIError } from './errors';
 import { runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, SilentSignInOptions, GuardBody } from './guard';
 import type { LoginRequestDetails } from './types';
 import { FixedWindowLimiter, RateLimitOptions } from './rateLimiter';
@@ -53,7 +53,7 @@ const MAX_BODY_BYTES = 100 * 1024;
 // A 1.5 s poll for a 2-minute push is 80 requests: one attempt's worth of polls.
 const POLLS_PER_ATTEMPT = 10;
 
-export interface TouchQueRelayOptions {
+export interface TouchqueRelayOptions {
   /**
    * Resolve the signed-in user's identifier for the "auth required" routes
    * (enrollment, passkey registration/management) from YOUR session. Return
@@ -138,28 +138,28 @@ function json(body: unknown, status = 200, extra?: Headers | Record<string, stri
   return new Response(JSON.stringify(body), { status, headers });
 }
 
-/** Same status-code mapping as touchqueRouter (and requireTouchQue) — kept in sync. */
+/** Same status-code mapping as touchqueRouter (and requireTouchque) — kept in sync. */
 function authResultError(error: unknown, log: SdkLog): Response {
-  if (error instanceof TouchQueRejectedError) {
+  if (error instanceof TouchqueRejectedError) {
     return json({ error: '2FA_REJECTED', message: 'User rejected the 2FA request on their device.' }, 403);
   }
-  if (error instanceof TouchQuePasskeyRequiredError) {
+  if (error instanceof TouchquePasskeyRequiredError) {
     return json({ error: 'PASSKEY_REQUIRED', requestId: error.requestId, message: 'Approve this sign-in with your passkey.' }, 409);
   }
-  if (error instanceof TouchQueTimeoutError) {
+  if (error instanceof TouchqueTimeoutError) {
     return json({ error: '2FA_TIMEOUT', message: 'User did not respond to the 2FA request in time.' }, 408);
   }
   const apiErr = error as { status?: number; data?: { error?: string; message?: string }; message?: string };
   if (typeof apiErr.status === 'number' && apiErr.status < 500) {
     return json({ error: apiErr.data?.error || apiErr.data?.message || apiErr.message || 'request_failed' }, apiErr.status);
   }
-  log.error(`[TouchQue Relay Error] ${describeError(error)}`);
+  log.error(`[Touchque Relay Error] ${describeError(error)}`);
   return json({ error: '2FA_UNAVAILABLE', message: 'The 2FA verification service is temporarily unavailable.' }, 503);
 }
 
 /** A client-range Touchque status with its machine-readable code only (never Touchque's message text); anything else 502. */
 function relayError(error: unknown): Response {
-  if (error instanceof TouchQueAPIError && error.status < 500) {
+  if (error instanceof TouchqueAPIError && error.status < 500) {
     return json({ error: error.code || (error.data as { error?: string })?.error || 'request_failed' }, error.status);
   }
   return json({ error: 'relay_error' }, 502);
@@ -211,7 +211,7 @@ async function readBody(req: Request): Promise<Body | Response> {
 let warnedPreAuth = false;
 let warnedNoIp = false;
 
-export function touchqueRelay(tq: TouchQue, options: TouchQueRelayOptions): (req: Request) => Promise<Response> {
+export function touchqueRelay(tq: Touchque, options: TouchqueRelayOptions): (req: Request) => Promise<Response> {
   const { getUserId, getLoginUser, actionType = 'LOGIN', onAuthenticated, getDetails } = options;
   const basePath = (options.basePath ?? '/touchque').replace(/\/+$/, '');
   const limiter = options.rateLimit === false ? null : new FixedWindowLimiter(options.rateLimit || {});
@@ -220,13 +220,13 @@ export function touchqueRelay(tq: TouchQue, options: TouchQueRelayOptions): (req
 
   if (!getLoginUser && !warnedPreAuth) {
     warnedPreAuth = true;
-    logOf(tq).warn('[TouchQue] touchqueRelay: POST /login takes the username from the request body'
+    logOf(tq).warn('[Touchque] touchqueRelay: POST /login takes the username from the request body'
       + (offlineEnabled ? ', and so do the offline routes' : '; the offline routes are disabled until you set it')
       + '. Set `getLoginUser` to bind them to your first factor (password step) so they cannot be used against arbitrary users.');
   }
   if (limiter && !options.ip && !(options.trustedProxyHops && options.trustedProxyHops > 0) && !warnedNoIp) {
     warnedNoIp = true;
-    logOf(tq).warn('[TouchQue] touchqueRelay: no client address (set `ip` or `trustedProxyHops`), so the per-IP limits are off; the per-username limits stay.');
+    logOf(tq).warn('[Touchque] touchqueRelay: no client address (set `ip` or `trustedProxyHops`), so the per-IP limits are off; the per-username limits stay.');
   }
 
   const requireUserId = async (req: Request): Promise<string | Response> => {
@@ -315,7 +315,7 @@ export function touchqueRelay(tq: TouchQue, options: TouchQueRelayOptions): (req
     }
   };
 
-  // ── Classic push 2FA: login (same two-phase contract as requireTouchQue) ──
+  // ── Classic push 2FA: login (same two-phase contract as requireTouchque) ──
   const login: Handler = async (req, body) => {
     const externalUsername = await loginUser(req, body, 'externalUsername');
     if (typeof externalUsername !== 'string') return externalUsername;
@@ -500,7 +500,7 @@ export function touchqueRelay(tq: TouchQue, options: TouchQueRelayOptions): (req
         try {
           return json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true }));
         } catch (error) {
-          if (!(error instanceof TouchQueAPIError && error.status === 403 && error.code === 'enrollment_approval_required')) throw error;
+          if (!(error instanceof TouchqueAPIError && error.status === 403 && error.code === 'enrollment_approval_required')) throw error;
         }
       }
       const refused = isStatusPoll(tq, input)

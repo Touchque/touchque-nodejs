@@ -1,5 +1,5 @@
 // src/internal.ts
-// Per-client internals the guards need, kept off the public TouchQue object
+// Per-client internals the guards need, kept off the public Touchque object
 // so the API secret is never enumerable / serialized with it.
 
 import type { HttpClient } from './core/HttpClient';
@@ -21,7 +21,7 @@ export function registerInternals(client: object, internals: Internals): void {
 
 function get(client: object): Internals {
   const i = store.get(client);
-  if (!i) throw new TypeError('Not a TouchQue client instance');
+  if (!i) throw new TypeError('Not a Touchque client instance');
   return i;
 }
 

@@ -1,11 +1,11 @@
-// An organization's AI agent on TouchQue SSO against the shared fake API's
+// An organization's AI agent on Touchque SSO against the shared fake API's
 // /sso/token: its own key or its platform's token, a DPoP proof, and calls to
 // an app that checks the proof against the token's key.
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
-import { TouchQueOrgAgent, generateAgentKey } from './index';
-import { TouchQueAPIError, TouchQueConfigError } from './errors';
+import { TouchqueOrgAgent, generateAgentKey } from './index';
+import { TouchqueAPIError, TouchqueConfigError } from './errors';
 
 let fake: ChildProcess;
 let base: string;
@@ -22,12 +22,12 @@ beforeAll(async () => {
 });
 afterAll(() => { fake?.kill(); });
 
-describe('TouchQueOrgAgent', () => {
+describe('TouchqueOrgAgent', () => {
   test('with its own key: a DPoP-bound token, cached, and calls the app with a fresh proof', async () => {
     const keys = generateAgentKey();
     const agentId = 'oagt_abcdefghijkmnpqrstuv';
     await post('/__test/org-agent', { agentId, publicKey: keys.publicJwk, audiences: [APP], scopes: ['invoices:read', 'payments:create'] });
-    const agent = new TouchQueOrgAgent({ agentId, privateKey: keys.privateJwk, issuer: base });
+    const agent = new TouchqueOrgAgent({ agentId, privateKey: keys.privateJwk, issuer: base });
     const token = await agent.getToken({ scope: 'invoices:read' });
     expect(token).toMatchObject({ tokenType: 'DPoP', expiresIn: 300, scope: 'invoices:read' });
     expect(await agent.getToken({ scope: 'invoices:read' })).toBe(token);
@@ -44,18 +44,18 @@ describe('TouchQueOrgAgent', () => {
     const agentId = 'oagt_bbbbbbbbbbbbbbbbbbbb';
     await post('/__test/org-agent', { agentId, workload: { subject: 'repo:acme/payments:ref:refs/heads/main', audience: 'touchque' }, audiences: [APP], scopes: ['invoices:read'] });
     const platform = async () => (await post('/__test/workload-token', { sub: 'repo:acme/payments:ref:refs/heads/main', aud: 'touchque' })).token as string;
-    const agent = new TouchQueOrgAgent({ agentId, issuer: base, assertion: platform });
+    const agent = new TouchqueOrgAgent({ agentId, issuer: base, assertion: platform });
     const res = await agent.fetch(`${base}/__test/resource`);
     expect((await res.json() as any).via).toBe('workload');
-    const wrong = new TouchQueOrgAgent({ agentId, issuer: base, assertion: async () => (await post('/__test/workload-token', { sub: 'repo:evil/x', aud: 'touchque' })).token });
-    await expect(wrong.getToken()).rejects.toBeInstanceOf(TouchQueAPIError);
+    const wrong = new TouchqueOrgAgent({ agentId, issuer: base, assertion: async () => (await post('/__test/workload-token', { sub: 'repo:evil/x', aud: 'touchque' })).token });
+    await expect(wrong.getToken()).rejects.toBeInstanceOf(TouchqueAPIError);
   });
 
   test('for a member: with their token, or by asking them on the phone', async () => {
     const keys = generateAgentKey();
     const agentId = 'oagt_cccccccccccccccccccc';
     await post('/__test/org-agent', { agentId, publicKey: keys.publicJwk, audiences: [APP], scopes: ['payments:create'], delegation: ['token_exchange', 'ciba'] });
-    const agent = new TouchQueOrgAgent({ agentId, privateKey: keys.privateJwk, issuer: base });
+    const agent = new TouchqueOrgAgent({ agentId, privateKey: keys.privateJwk, issuer: base });
     const exchanged = await agent.exchangeToken({ subjectToken: 'member:ada@acme.com' });
     const call = (t: string) => fetch(`${base}/__test/resource`, { headers: { Authorization: `DPoP ${t}`, DPoP: agent.dpopProof('GET', `${base}/__test/resource`, t) } }).then((r) => r.json() as Promise<any>);
     expect(await call(exchanged.accessToken)).toMatchObject({ sub: 'ada@acme.com', act: agentId });
@@ -88,8 +88,8 @@ describe('TouchQueOrgAgent', () => {
   }, 15000);
 
   test('configuration mistakes fail early', () => {
-    expect(() => new TouchQueOrgAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: generateAgentKey().privateJwk })).toThrow(TouchQueConfigError);
-    expect(() => new TouchQueOrgAgent({ agentId: 'oagt_abcdefghijkmnpqrstuv', issuer: 'http://sso.example.com', assertion: () => 'x' })).toThrow(/plaintext/);
-    expect(() => new TouchQueOrgAgent({ agentId: 'oagt_abcdefghijkmnpqrstuv' })).toThrow(/privateKey|assertion/);
+    expect(() => new TouchqueOrgAgent({ agentId: 'agt_abcdefghijkmnpqrstuv', privateKey: generateAgentKey().privateJwk })).toThrow(TouchqueConfigError);
+    expect(() => new TouchqueOrgAgent({ agentId: 'oagt_abcdefghijkmnpqrstuv', issuer: 'http://sso.example.com', assertion: () => 'x' })).toThrow(/plaintext/);
+    expect(() => new TouchqueOrgAgent({ agentId: 'oagt_abcdefghijkmnpqrstuv' })).toThrow(/privateKey|assertion/);
   });
 });

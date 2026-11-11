@@ -7,7 +7,7 @@
 
 import { createRequire } from 'module';
 import type { Router } from 'express';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 
 function requireHere(): NodeRequire {
   // The CommonJS build has __filename; the ES module build has import.meta.url
@@ -22,7 +22,7 @@ export function expressRouter(helper: string): Router {
   try {
     express = requireHere()('express');
   } catch {
-    throw new TouchQueConfigError(`${helper}() needs express: npm install express`);
+    throw new TouchqueConfigError(`${helper}() needs express: npm install express`);
   }
   return express.Router();
 }

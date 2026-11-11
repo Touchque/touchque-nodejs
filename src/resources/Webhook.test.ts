@@ -2,7 +2,7 @@ import { describe, test, expect, vi, afterEach } from 'vitest';
 import * as crypto from 'crypto';
 import { inspect } from 'util';
 import { Webhook, MemoryWebhookReplayCache } from './Webhook';
-import { TouchQueWebhookSignatureError, TouchQueWebhookReplayError } from '../errors';
+import { TouchqueWebhookSignatureError, TouchqueWebhookReplayError } from '../errors';
 
 const SECRET = 'whsec_test';
 
@@ -62,13 +62,13 @@ describe('Webhook.verify — matches the backend signing scheme', () => {
     const { signature } = serverWebhook(freshPayload({ status: 'SUCCESS' }));
     const tampered = JSON.stringify({ ...freshPayload({ status: 'REJECTED' }), signature });
 
-    expect(() => webhook.verify({ rawBody: tampered, signature })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: tampered, signature })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('rejects a wrong secret', () => {
     const webhook = new Webhook(SECRET);
     const { rawBody, signature } = serverWebhook(freshPayload(), 'other_secret');
-    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('rejects a stale webhook (replay protection, default 5 min tolerance)', () => {
@@ -76,7 +76,7 @@ describe('Webhook.verify — matches the backend signing scheme', () => {
     const old = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     const { rawBody, signature } = serverWebhook(freshPayload({ timestamp: old }));
 
-    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('toleranceSeconds: 0 disables the freshness check', () => {
@@ -89,24 +89,24 @@ describe('Webhook.verify — matches the backend signing scheme', () => {
 
   test('rejects missing / non-string rawBody', () => {
     const webhook = new Webhook(SECRET);
-    expect(() => webhook.verify({ rawBody: '', signature: 'x' })).toThrow(TouchQueWebhookSignatureError);
-    expect(() => webhook.verify({ rawBody: undefined as any, signature: 'x' })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: '', signature: 'x' })).toThrow(TouchqueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: undefined as any, signature: 'x' })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('rejects when no signature is available anywhere', () => {
     const webhook = new Webhook(SECRET);
     const rawBody = JSON.stringify(freshPayload()); // no signature field, none passed
-    expect(() => webhook.verify({ rawBody })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('rejects a non-JSON body without crashing', () => {
     const webhook = new Webhook(SECRET);
-    expect(() => webhook.verify({ rawBody: 'not json', signature: 'x' })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: 'not json', signature: 'x' })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('rejects a JSON array body', () => {
     const webhook = new Webhook(SECRET);
-    expect(() => webhook.verify({ rawBody: '[1,2,3]', signature: 'x' })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: '[1,2,3]', signature: 'x' })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('isValid() never throws', () => {
@@ -144,8 +144,8 @@ describe('Webhook.verify — matches the backend signing scheme', () => {
     const webhook = new Webhook(SECRET);
     const { rawBody, signature } = serverWebhook(freshPayload());
     const injected = rawBody.replace(/^\{/, '{"__proto__":{"isAdmin":true},');
-    expect(() => webhook.verify({ rawBody: injected, signature })).toThrow(TouchQueWebhookSignatureError);
-    expect(() => webhook.verify({ rawBody: injected })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: injected, signature })).toThrow(TouchqueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody: injected })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('a login result types its status as SUCCESS or REJECTED', () => {
@@ -169,25 +169,25 @@ describe('Webhook.verify — replay protection (A12)', () => {
     const webhook = new Webhook(SECRET);
     const { timestamp: _t, ...noTs } = freshPayload();
     const { rawBody, signature } = serverWebhook(noTs);
-    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('an unparseable timestamp is rejected', () => {
     const webhook = new Webhook(SECRET);
     const { rawBody, signature } = serverWebhook(freshPayload({ timestamp: 'not-a-date' }));
-    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ rawBody, signature })).toThrow(TouchqueWebhookSignatureError);
   });
 
-  test('with a replay cache, the second delivery of the same jti throws TouchQueWebhookReplayError', () => {
+  test('with a replay cache, the second delivery of the same jti throws TouchqueWebhookReplayError', () => {
     const webhook = new Webhook(SECRET);
     const replayCache = new MemoryWebhookReplayCache();
     const { rawBody, signature } = serverWebhook(freshPayload({ jti: 'jti_once' }));
     expect(webhook.verify({ rawBody, signature, replayCache }).jti).toBe('jti_once');
     let caught: unknown;
     try { webhook.verify({ rawBody, signature, replayCache }); } catch (e) { caught = e; }
-    expect(caught).toBeInstanceOf(TouchQueWebhookReplayError);
-    expect(caught).toBeInstanceOf(TouchQueWebhookSignatureError); // old catch blocks still reject it
-    expect((caught as TouchQueWebhookReplayError).jti).toBe('jti_once');
+    expect(caught).toBeInstanceOf(TouchqueWebhookReplayError);
+    expect(caught).toBeInstanceOf(TouchqueWebhookSignatureError); // old catch blocks still reject it
+    expect((caught as TouchqueWebhookReplayError).jti).toBe('jti_once');
   });
 
   test('a different jti passes; a missing jti is rejected when a cache is configured', () => {
@@ -198,7 +198,7 @@ describe('Webhook.verify — replay protection (A12)', () => {
     webhook.verify({ ...a, replayCache });
     expect(() => webhook.verify({ ...b, replayCache })).not.toThrow();
     const { jti: _j, ...noJti } = freshPayload();
-    expect(() => webhook.verify({ ...serverWebhook(noJti), replayCache })).toThrow(TouchQueWebhookSignatureError);
+    expect(() => webhook.verify({ ...serverWebhook(noJti), replayCache })).toThrow(TouchqueWebhookSignatureError);
   });
 
   test('a forged webhook never poisons the cache', () => {

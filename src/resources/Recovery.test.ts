@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Recovery, isRecoveryOpen } from './Recovery';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 import type { HttpClient } from '../core/HttpClient';
 
 function fakeHttp() {
@@ -42,10 +42,10 @@ describe('Recovery resource', () => {
   test('missing arguments are clear errors before any request', async () => {
     const http = fakeHttp();
     const r = new Recovery(http);
-    await expect(r.start({} as never)).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(r.setVouchers({ externalUsername: 'a@b.com' } as never)).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(r.status('')).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(r.list({})).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(r.start({} as never)).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(r.setVouchers({ externalUsername: 'a@b.com' } as never)).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(r.status('')).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(r.list({})).rejects.toBeInstanceOf(TouchqueConfigError);
     expect(http.post).not.toHaveBeenCalled();
     expect(http.get).not.toHaveBeenCalled();
   });

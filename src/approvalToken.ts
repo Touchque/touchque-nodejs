@@ -2,14 +2,14 @@
 // What a partner's server checks before executing what an AI agent asked
 // for: the approval token's claims match the transaction (person, action
 // type, authorization details), and, offline, its ES256 signature against
-// TouchQue's keys (GET /agents/jwks.json). Matching rules (fixtures/agent-vectors.json):
+// Touchque's keys (GET /agents/jwks.json). Matching rules (fixtures/agent-vectors.json):
 // every expected field must be equal, extra fields are ignored; amounts
 // compare as decimals ("500" = "500.00"), IBANs without spaces and in any
 // case, currencies in any case; an object matches a token with exactly one
 // entry, an array matches entry by entry with the same length.
 
 import * as crypto from 'crypto';
-import { TouchQueApprovalMismatchError } from './errors';
+import { TouchqueApprovalMismatchError } from './errors';
 
 export interface AuthorizationDetail {
   type: 'payment_initiation' | 'purchase' | 'data_access' | 'account_change' | 'message_send' | 'generic' | string;
@@ -85,25 +85,25 @@ export function matchesAuthorizationDetails(details: unknown, expected: Record<s
   return details.length === 1 && partial(details[0], expected);
 }
 
-/** Throws TouchQueApprovalMismatchError unless the claims say what `expect` says. */
+/** Throws TouchqueApprovalMismatchError unless the claims say what `expect` says. */
 export function assertApprovalMatches(claims: { sub?: string; type?: string; authorization_details?: unknown }, expect: ApprovalExpectation = {}): void {
-  if (expect.user !== undefined && claims.sub !== expect.user) throw new TouchQueApprovalMismatchError('the approval is for another person');
-  if (expect.type !== undefined && claims.type !== expect.type) throw new TouchQueApprovalMismatchError(`the approval is for another action type (${claims.type})`);
+  if (expect.user !== undefined && claims.sub !== expect.user) throw new TouchqueApprovalMismatchError('the approval is for another person');
+  if (expect.type !== undefined && claims.type !== expect.type) throw new TouchqueApprovalMismatchError(`the approval is for another action type (${claims.type})`);
   if (expect.authorizationDetails !== undefined && !matchesAuthorizationDetails(claims.authorization_details, expect.authorizationDetails)) {
-    throw new TouchQueApprovalMismatchError('the approved details differ from what you are about to execute');
+    throw new TouchqueApprovalMismatchError('the approved details differ from what you are about to execute');
   }
 }
 
 const b64json = (part: string) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
 
-/** The claims of an approval token WITHOUT checking its signature (redeemApproval checks it on TouchQue). */
+/** The claims of an approval token WITHOUT checking its signature (redeemApproval checks it on Touchque). */
 export function decodeApprovalToken(token: string): { header: Record<string, any>; claims: ApprovalTokenClaims } {
   const parts = typeof token === 'string' ? token.split('.') : [];
-  if (parts.length !== 3) throw new TouchQueApprovalMismatchError('not an approval token');
+  if (parts.length !== 3) throw new TouchqueApprovalMismatchError('not an approval token');
   try {
     return { header: b64json(parts[0]), claims: b64json(parts[1]) };
   } catch {
-    throw new TouchQueApprovalMismatchError('not an approval token');
+    throw new TouchqueApprovalMismatchError('not an approval token');
   }
 }
 
@@ -120,22 +120,22 @@ export interface Jwks { keys: Array<Record<string, any>> }
  */
 export function verifyApprovalTokenWith(token: string, jwks: Jwks, options: { audience: string; expect?: ApprovalExpectation; now?: number }): ApprovalTokenClaims {
   if (typeof options?.audience !== 'string' || !options.audience) {
-    throw new TouchQueApprovalMismatchError("audience is required: your workspace's touchque:workspace:<id> (tq.agents.approvalAudience())");
+    throw new TouchqueApprovalMismatchError("audience is required: your workspace's touchque:workspace:<id> (tq.agents.approvalAudience())");
   }
   const { header, claims } = decodeApprovalToken(token);
-  if (header.typ !== 'touchque-approval+jwt' || header.alg !== 'ES256') throw new TouchQueApprovalMismatchError('not an approval token (typ/alg)');
+  if (header.typ !== 'touchque-approval+jwt' || header.alg !== 'ES256') throw new TouchqueApprovalMismatchError('not an approval token (typ/alg)');
   const jwk = (jwks.keys || []).find((k) => k.kid === header.kid && k.kty === 'EC' && k.crv === 'P-256');
-  if (!jwk) throw new TouchQueApprovalMismatchError('signed by an unknown key');
+  if (!jwk) throw new TouchqueApprovalMismatchError('signed by an unknown key');
   const [h, p, s] = token.split('.');
   const key = crypto.createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y }, format: 'jwk' });
   const sig = Buffer.from(s, 'base64url');
   if (sig.length !== 64 || !crypto.verify('sha256', Buffer.from(`${h}.${p}`), { key, dsaEncoding: 'ieee-p1363' }, sig)) {
-    throw new TouchQueApprovalMismatchError('the signature does not verify');
+    throw new TouchqueApprovalMismatchError('the signature does not verify');
   }
   const now = Math.floor((options.now ?? Date.now()) / 1000);
-  if (typeof claims.exp !== 'number' || claims.exp + 30 < now) throw new TouchQueApprovalMismatchError('the approval token expired');
-  if (typeof claims.aud !== 'string' || !claims.aud) throw new TouchQueApprovalMismatchError('the approval token names no workspace');
-  if (claims.aud !== options.audience) throw new TouchQueApprovalMismatchError('the approval token is for another workspace');
+  if (typeof claims.exp !== 'number' || claims.exp + 30 < now) throw new TouchqueApprovalMismatchError('the approval token expired');
+  if (typeof claims.aud !== 'string' || !claims.aud) throw new TouchqueApprovalMismatchError('the approval token names no workspace');
+  if (claims.aud !== options.audience) throw new TouchqueApprovalMismatchError('the approval token is for another workspace');
   assertApprovalMatches(claims, options.expect);
   return claims;
 }

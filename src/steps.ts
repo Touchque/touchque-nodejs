@@ -13,7 +13,7 @@ import type { Auth } from './resources/Auth';
 import type { Login } from './resources/Login';
 import type { Offline } from './resources/Offline';
 import type { ApprovalAssurance, LoginRequestDetails, RiskReason } from './types';
-import { TouchQueAPIError, TouchQueConfigError, TouchQueError } from './errors';
+import { TouchqueAPIError, TouchqueConfigError, TouchqueError } from './errors';
 import { detailsDigest } from './approvalProof';
 
 export type StepState =
@@ -83,11 +83,11 @@ export interface StartOptions {
   /** Show an enrollment QR when the user has not linked a phone yet (default true). */
   enroll?: boolean;
   /**
-   * Silent sign-ins: the browser's device-bound key proof (`X-TouchQue-Browser`),
-   * passed through untouched. Once the user approves, TouchQue knows this browser.
+   * Silent sign-ins: the browser's device-bound key proof (`X-Touchque-Browser`),
+   * passed through untouched. Once the user approves, Touchque knows this browser.
    */
   browserProof?: string;
-  /** For your TouchQue Actions only (`event.context`): roles, plan, amount… Never shown on the phone. */
+  /** For your Touchque Actions only (`event.context`): roles, plan, amount… Never shown on the phone. */
   context?: Record<string, unknown>;
 }
 
@@ -102,7 +102,7 @@ export interface Approval {
   approvalProof: unknown;
   /**
    * Vishing Shield: approved on the phone during a call. Let the user in but
-   * treat the session as limited: TouchQue refuses their critical actions
+   * treat the session as limited: Touchque refuses their critical actions
    * until the phone re-confirms (`APPROVAL_RECONFIRMED`), and
    * `APPROVAL_REVOKED` means end it.
    */
@@ -113,7 +113,7 @@ export interface Approval {
   reconfirmedAt?: string | null;
   /**
    * Silent sign-ins only (`assurance.method === 'silent'`, `confirmedVia: 'SILENT'`):
-   * nothing was sent to the phone; why TouchQue let this known browser in.
+   * nothing was sent to the phone; why Touchque let this known browser in.
    */
   reasons?: RiskReason[];
 }
@@ -130,11 +130,11 @@ export function normalizeDetails(details?: LoginRequestDetails): Array<{ label: 
 }
 
 const codeOf = (err: unknown): string | undefined =>
-  err instanceof TouchQueAPIError ? (err.code || (err.data as { error?: string })?.error) : undefined;
+  err instanceof TouchqueAPIError ? (err.code || (err.data as { error?: string })?.error) : undefined;
 
 /** Starts an approval for `action` — never waits. */
 export async function start(r: Resources, action: string, opts: StartOptions): Promise<Step> {
-  if (!opts?.user) throw new TouchQueConfigError('start() needs the user id (options.user)');
+  if (!opts?.user) throw new TouchqueConfigError('start() needs the user id (options.user)');
   const details = normalizeDetails(opts.details);
   try {
     const res = await r.login.request({
@@ -163,7 +163,7 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
       ...why,
     };
   } catch (err) {
-    if (!(err instanceof TouchQueAPIError)) throw err;
+    if (!(err instanceof TouchqueAPIError)) throw err;
     const code = codeOf(err);
     const data = err.data as { retryAfter?: number; reason?: string; error?: string };
     const why = err.caseCode ? { caseCode: err.caseCode } : {};
@@ -174,7 +174,7 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
     if (err.status === 423) return { state: 'frozen', retryAfter: data.retryAfter, ...why };
     if (err.status === 429) return { state: 'rate_limited', retryAfter: data.retryAfter, ...why };
     if (err.status === 400 && (code === 'unknown_action' || /Invalid action type/i.test(err.message))) {
-      throw new TouchQueConfigError(
+      throw new TouchqueConfigError(
         `Unknown action "${action}". Create it once with tq.actionTypes.define('${action}') or in the Dashboard (Action Types).`,
       );
     }
@@ -210,7 +210,7 @@ async function enrollStep(r: Resources, user: string): Promise<Step> {
     const gen = await r.auth.generateSecret({ externalUsername: user });
     return { state: 'enroll', enroll: { qrCodeDataUrl: gen.qrCodeDataUrl, recoveryCodes: gen.recoveryCodes, expiresAt: gen.expiresAt } };
   } catch (err) {
-    if (!(err instanceof TouchQueAPIError) || err.status !== 409) throw err;
+    if (!(err instanceof TouchqueAPIError) || err.status !== 409) throw err;
     const current = await r.auth.getUser({ externalUsername: user }).catch(() => null);
     if (current && (current.used || current.deviceId)) {
       // Linked in the meantime — the caller just starts again.
@@ -251,7 +251,7 @@ export async function complete(r: Resources, requestId: string, expect: Complete
   const sameDetails = detailsDigest(normalizeDetails(expect.details)) === detailsDigest(res.details || []);
   const sameRef = (res.referenceId || null) === (expect.referenceId || null);
   if (!sameUser || res.type !== expect.action || !sameDetails || !sameRef) {
-    throw new TouchQueError('TouchQue: this approval is for a different user, action or transaction.');
+    throw new TouchqueError('Touchque: this approval is for a different user, action or transaction.');
   }
   return {
     requestId,

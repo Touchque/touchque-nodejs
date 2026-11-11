@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Risk } from './Risk';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 import type { HttpClient } from '../core/HttpClient';
 
 function fakeHttp() {
@@ -43,9 +43,9 @@ describe('Risk resource', () => {
   test('a missing user is a clear error before any request', async () => {
     const http = fakeHttp();
     const risk = new Risk(http);
-    await expect(risk.check({} as never)).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(risk.browsers({} as never)).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(risk.forgetBrowsers({} as never)).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(risk.check({} as never)).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(risk.browsers({} as never)).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(risk.forgetBrowsers({} as never)).rejects.toBeInstanceOf(TouchqueConfigError);
     expect(http.post).not.toHaveBeenCalled();
     expect(http.get).not.toHaveBeenCalled();
   });

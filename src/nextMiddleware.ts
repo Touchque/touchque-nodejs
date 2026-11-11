@@ -1,5 +1,5 @@
 // src/nextMiddleware.ts — `@touchque/node/next/middleware`: protects Next.js
-// pages with the TouchQue Login session cookie. Runs on the Edge: WebCrypto
+// pages with the Touchque Login session cookie. Runs on the Edge: WebCrypto
 // only, no Node.js modules.
 //
 //   // middleware.ts
@@ -10,8 +10,8 @@
 // It only checks that the cookie decrypts and has not expired; the pages
 // read the session with touchque.getSession() (`@touchque/node/next`).
 
-export interface TouchQueMiddlewareOptions {
-  /** The same secret as createTouchQueLogin. */
+export interface TouchqueMiddlewareOptions {
+  /** The same secret as createTouchqueLogin. */
   secret: string;
   /** Path prefixes that need a signed-in user, or a test. Default: every path the matcher sends here. */
   protect?: string[] | ((pathname: string) => boolean);
@@ -77,7 +77,7 @@ export async function hasSession(sealed: string | undefined, secret: string): Pr
 }
 
 /** Next.js middleware: a protected path without a session goes to {basePath}/login?returnTo=… */
-export function touchqueMiddleware(options: TouchQueMiddlewareOptions) {
+export function touchqueMiddleware(options: TouchqueMiddlewareOptions) {
   if (!options?.secret || options.secret.length < 32) throw new Error('secret must be at least 32 characters');
   const basePath = (options.basePath || '/auth').replace(/\/+$/, '');
   const cookieName = options.cookieName || 'tq_session';

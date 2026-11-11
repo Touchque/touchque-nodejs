@@ -9,7 +9,7 @@
 
 import * as crypto from 'crypto';
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueAPIError } from '../errors';
+import { TouchqueAPIError } from '../errors';
 import {
   OfflineChallengeOptions,
   OfflineChallengeResponse,
@@ -34,7 +34,7 @@ export class Offline {
    *
    * `qrDataUrl` is a ready-to-render PNG (`<img src={qrDataUrl}>`); `qr` is the
    * raw text if you draw the QR yourself. The challenge expires after
-   * `expiresInSeconds` (default 120) — enforced by TouchQue, not by the phone.
+   * `expiresInSeconds` (default 120) — enforced by Touchque, not by the phone.
    *
    * @example
    * const ch = await tq.offline.challenge({
@@ -92,7 +92,7 @@ export class Offline {
 
   /**
    * For checking typed time-based codes while your server cannot reach
-   * TouchQue (an outage): salted, slow digests of each user's next codes,
+   * Touchque (an outage): salted, slow digests of each user's next codes,
    * never a key. Check a typed code with `matchTotpVerifier()`. Requires the workspace policies `offlineTotpEnabled` and
    * `outageVerifiersEnabled`. Fetch again every few minutes from the step you
    * have: removed and frozen users fall out.
@@ -107,7 +107,7 @@ export class Offline {
 
   /**
    * Checks a typed code against one user's verifiers from `totpVerifiers()`,
-   * without calling TouchQue. Returns the step the code belongs to (the
+   * without calling Touchque. Returns the step the code belongs to (the
    * current one or one either side), or null. Accept each step once: remember
    * the step you accepted for the user and refuse codes for it or an older one.
    */
@@ -137,7 +137,7 @@ export class Offline {
     try {
       return await call();
     } catch (error) {
-      if (error instanceof TouchQueAPIError && NOT_APPROVED_STATUSES.includes(error.status)) {
+      if (error instanceof TouchqueAPIError && NOT_APPROVED_STATUSES.includes(error.status)) {
         const data = error.data as unknown as { reason?: string; error?: string; attemptsLeft?: number };
         return { approved: false, reason: data.reason ?? data.error ?? 'not_approved', attemptsLeft: data.attemptsLeft };
       }

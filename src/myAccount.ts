@@ -1,5 +1,5 @@
 // src/myAccount.ts
-// The TouchQue Login My Account API (/me/v1) from your server: the signed-in
+// The Touchque Login My Account API (/me/v1) from your server: the signed-in
 // customer's own profile, sign-in methods, devices, apps and data, called
 // with their access token for audience https://<domain>/me/.
 //
@@ -11,9 +11,9 @@
 // it is too old the call throws MyAccountError with stepUp true: send the
 // person through authorizationUrl({ maxAge: 0 }) again.
 
-import { TouchQueError } from './errors';
+import { TouchqueError } from './errors';
 
-export class MyAccountError extends TouchQueError {
+export class MyAccountError extends TouchqueError {
   public readonly code: string;
   public readonly status: number;
   /** True when the sign-in is too old for this change (RFC 9470). */
@@ -135,7 +135,7 @@ export class MyAccount {
   /** Needs a recent sign-in. */
   removePasskey(id: string) { return this.call<void>('DELETE', `/authentication-methods/passkeys/${seg(id)}`); }
   /** Needs a recent sign-in. */
-  unlinkTouchQueApp() { return this.call<void>('DELETE', '/authentication-methods/touchque'); }
+  unlinkTouchqueApp() { return this.call<void>('DELETE', '/authentication-methods/touchque'); }
   /** Email codes as a second step. Needs a recent sign-in. */
   setEmailCodes(enabled: boolean) { return this.call<{ enabled: boolean }>('PUT', '/authentication-methods/email', { enabled }); }
   /** Texts a code to a new number for text-message codes. Needs a recent sign-in. */

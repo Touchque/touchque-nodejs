@@ -11,7 +11,7 @@ describe('FixedWindowLimiter', () => {
     expect(l.hit('k', 3, t + 10_001)).toBe(0); // new window
   });
 
-  test('is exported from the package with its defaults, for withTouchQue and hand-written relays', async () => {
+  test('is exported from the package with its defaults, for withTouchque and hand-written relays', async () => {
     const pkg = await import('./index');
     expect(pkg.FixedWindowLimiter).toBe(FixedWindowLimiter);
     const l = new pkg.FixedWindowLimiter();

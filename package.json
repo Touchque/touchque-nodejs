@@ -1,14 +1,14 @@
 {
   "name": "@touchque/node",
-  "version": "4.2.0",
-  "description": "Official Node.js SDK for TouchQue Authenticator (2FA/MFA, passkeys, adaptive auth)",
+  "version": "5.0.0",
+  "description": "Official Node.js SDK for Touchque Authenticator (2FA/MFA, passkeys, adaptive auth)",
   "repository": {
     "type": "git",
     "url": "https://github.com/Touchque/touchque-nodejs"
   },
   "homepage": "https://touchque.com",
   "license": "MIT",
-  "author": "TouchQue",
+  "author": "Touchque",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

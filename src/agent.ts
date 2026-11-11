@@ -1,15 +1,15 @@
 // src/agent.ts
-// The agent side: an AI agent calls TouchQue with its OWN key, never with
-// your API key. TouchQueAgent signs a private_key_jwt assertion (RFC 7523)
+// The agent side: an AI agent calls Touchque with its OWN key, never with
+// your API key. TouchqueAgent signs a private_key_jwt assertion (RFC 7523)
 // for a 10-minute token bound to its key with DPoP (RFC 9449), and proves the
 // key on every call, so a stolen token is useless on its own.
 //
-//   const agent = new TouchQueAgent({ agentId: process.env.TQ_AGENT_ID, privateKey: JSON.parse(process.env.TQ_AGENT_KEY) });
+//   const agent = new TouchqueAgent({ agentId: process.env.TQ_AGENT_ID, privateKey: JSON.parse(process.env.TQ_AGENT_KEY) });
 //   const me = await agent.me();
 
 import * as crypto from 'crypto';
 import axios, { AxiosInstance } from 'axios';
-import { TouchQueAPIError, TouchQueApprovalError, TouchQueConfigError, TouchQueNetworkError, TouchQueTimeoutError, apiError } from './errors';
+import { TouchqueAPIError, TouchqueApprovalError, TouchqueConfigError, TouchqueNetworkError, TouchqueTimeoutError, apiError } from './errors';
 import type { AuthorizationDetail } from './approvalToken';
 import type { AgentPublicJwk } from './resources/Agents';
 
@@ -53,7 +53,7 @@ function toKeyObject(key: Jwk | string | crypto.KeyObject): crypto.KeyObject {
     if (typeof key === 'string') return crypto.createPrivateKey(key.trim().startsWith('{') ? { key: JSON.parse(key), format: 'jwk' } : key);
     return crypto.createPrivateKey({ key, format: 'jwk' });
   } catch {
-    throw new TouchQueConfigError('privateKey must be the agent\'s private key: a JWK (object or JSON), a PEM string or a KeyObject');
+    throw new TouchqueConfigError('privateKey must be the agent\'s private key: a JWK (object or JSON), a PEM string or a KeyObject');
   }
 }
 
@@ -67,12 +67,12 @@ function kidOf(key: Jwk | string | crypto.KeyObject): string | undefined {
   return typeof key.kid === 'string' ? key.kid : undefined;
 }
 
-export interface TouchQueAgentConfig {
+export interface TouchqueAgentConfig {
   /** The agent's id (agt_…). Default: TQ_AGENT_ID. */
   agentId?: string;
   /** The agent's private key: JWK (object or JSON string), PEM or KeyObject. Default: TQ_AGENT_KEY. */
   privateKey?: Jwk | string | crypto.KeyObject;
-  /** The kid it was registered with. Default: the key's RFC 7638 thumbprint (what TouchQue uses when none was given). */
+  /** The kid it was registered with. Default: the key's RFC 7638 thumbprint (what Touchque uses when none was given). */
   kid?: string;
   /** Default: TQ_API_URL or https://api.touchque.com. */
   baseUrl?: string;
@@ -92,7 +92,7 @@ export interface AgentApprovalParams {
   user: string;
   /** One of the agent's allowed action types. */
   type: string;
-  /** What exactly to approve; TouchQue draws the phone's rows from it. */
+  /** What exactly to approve; Touchque draws the phone's rows from it. */
   authorizationDetails: AuthorizationDetail[];
   /** The agent's own words, shown on the phone as unverified. */
   reason?: string;
@@ -173,7 +173,7 @@ export interface AgentApprovalState {
 
 const ENDED = new Set(['rejected', 'blocked', 'revoked', 'expired', 'stale', 'redeemed']);
 
-export class TouchQueAgent {
+export class TouchqueAgent {
   public readonly agentId: string;
   private readonly key: crypto.KeyObject;
   private readonly alg: 'ES256' | 'EdDSA';
@@ -185,18 +185,18 @@ export class TouchQueAgent {
   private token: { value: string; expiresAt: number } | null = null;
   private pending: Promise<string> | null = null;
 
-  constructor(config: TouchQueAgentConfig = {}) {
+  constructor(config: TouchqueAgentConfig = {}) {
     const env = typeof process !== 'undefined' ? process.env : {};
     const agentId = config.agentId ?? env.TQ_AGENT_ID ?? '';
-    if (!/^agt_[a-z2-9]{20}$/.test(agentId)) throw new TouchQueConfigError('Set TQ_AGENT_ID (or pass { agentId }): the agt_… id from tq.agents.create()');
+    if (!/^agt_[a-z2-9]{20}$/.test(agentId)) throw new TouchqueConfigError('Set TQ_AGENT_ID (or pass { agentId }): the agt_… id from tq.agents.create()');
     const keyInput = config.privateKey ?? env.TQ_AGENT_KEY;
-    if (!keyInput) throw new TouchQueConfigError('Set TQ_AGENT_KEY (or pass { privateKey }): the agent\'s private key');
+    if (!keyInput) throw new TouchqueConfigError('Set TQ_AGENT_KEY (or pass { privateKey }): the agent\'s private key');
     this.agentId = agentId;
     this.key = toKeyObject(keyInput);
     const type = this.key.asymmetricKeyType;
-    if (type !== 'ec' && type !== 'ed25519') throw new TouchQueConfigError('The agent key must be EC P-256 or Ed25519');
+    if (type !== 'ec' && type !== 'ed25519') throw new TouchqueConfigError('The agent key must be EC P-256 or Ed25519');
     if (type === 'ec' && (this.key.asymmetricKeyDetails as { namedCurve?: string })?.namedCurve !== 'prime256v1') {
-      throw new TouchQueConfigError('An EC agent key must be on P-256');
+      throw new TouchqueConfigError('An EC agent key must be on P-256');
     }
     this.alg = type === 'ed25519' ? 'EdDSA' : 'ES256';
     const pub = crypto.createPublicKey(this.key).export({ format: 'jwk' }) as Jwk;
@@ -206,7 +206,7 @@ export class TouchQueAgent {
     const url = new URL(this.baseUrl);
     const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
-      throw new TouchQueConfigError(`Refusing a plaintext baseUrl for "${url.hostname}": use https://`);
+      throw new TouchqueConfigError(`Refusing a plaintext baseUrl for "${url.hostname}": use https://`);
     }
     this.scope = config.scope;
     this.client = axios.create({ timeout: config.timeout || 10000, maxRedirects: 0, validateStatus: () => true });
@@ -231,7 +231,7 @@ export class TouchQueAgent {
     });
   }
 
-  private fail(status: number, data: Record<string, any>): TouchQueAPIError {
+  private fail(status: number, data: Record<string, any>): TouchqueAPIError {
     return apiError(status, {
       error: data.error,
       code: data.code ?? data.error,
@@ -253,7 +253,7 @@ export class TouchQueAgent {
     try {
       res = await this.client.post(url, form.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', DPoP: this.dpop('POST', url) } });
     } catch (err: any) {
-      throw new TouchQueNetworkError(err?.message || String(err), err?.code);
+      throw new TouchqueNetworkError(err?.message || String(err), err?.code);
     }
     if (res.status !== 200) throw this.fail(res.status, res.data || {});
     this.token = { value: res.data.access_token, expiresAt: Date.now() + (res.data.expires_in || 600) * 1000 };
@@ -267,7 +267,7 @@ export class TouchQueAgent {
     return this.pending;
   }
 
-  /** A call with the agent's token and a fresh DPoP proof; one retry with a new token when TouchQue no longer knows it. */
+  /** A call with the agent's token and a fresh DPoP proof; one retry with a new token when Touchque no longer knows it. */
   protected async request<T>(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, retried = false): Promise<T> {
     const token = await this.accessToken();
     const url = `${this.baseUrl}${path}`;
@@ -278,7 +278,7 @@ export class TouchQueAgent {
         headers: { Authorization: `DPoP ${token}`, DPoP: this.dpop(method, url.split('?')[0], token), ...(body !== undefined && { 'Content-Type': 'application/json' }) },
       });
     } catch (err: any) {
-      throw new TouchQueNetworkError(err?.message || String(err), err?.code);
+      throw new TouchqueNetworkError(err?.message || String(err), err?.code);
     }
     if (res.status === 401 && !retried && (res.data?.code === 'invalid_token')) {
       this.token = null;
@@ -288,13 +288,13 @@ export class TouchQueAgent {
     return res.data as T;
   }
 
-  /** The agent as TouchQue sees it: its action types, owner, review date and workspace. */
+  /** The agent as Touchque sees it: its action types, owner, review date and workspace. */
   async me(): Promise<AgentSelf> {
     return this.request<AgentSelf>('GET', '/agents/me');
   }
 
   /**
-   * Asks the person to approve on their TouchQue phone. Show `challengeCode`
+   * Asks the person to approve on their Touchque phone. Show `challengeCode`
    * in your conversation (interactive): the person types it on the phone.
    *
    * @example
@@ -303,7 +303,7 @@ export class TouchQueAgent {
    *   authorizationDetails: [{ type: 'payment_initiation', instructedAmount: { currency: 'TRY', amount: '500.00' },
    *     creditorName: 'Jane Doe', creditorAccount: { iban: 'TR33 0006 1005 1978 6457 8413 26' } }],
    * });
-   * say(`Type ${ask.challengeCode} in the TouchQue app to approve.`);
+   * say(`Type ${ask.challengeCode} in the Touchque app to approve.`);
    * const { approvalToken } = await agent.waitForApproval(ask.approvalId);
    */
   async requestApproval(params: AgentApprovalParams): Promise<AgentApprovalState> {
@@ -329,9 +329,9 @@ export class TouchQueAgent {
 
   /**
    * The token vault: a person's own access token at another service, for a
-   * connection that names this agent (tq.agents.vault). TouchQue refreshes it;
+   * connection that names this agent (tq.agents.vault). Touchque refreshes it;
    * the refresh token never leaves. `scope` may only narrow what the person
-   * granted. TouchQueAPIError not_connected when nothing is kept for them.
+   * granted. TouchqueAPIError not_connected when nothing is kept for them.
    */
   async getConnectionToken(params: { user: string; connection: string; scope?: string }): Promise<{ accessToken: string; tokenType: 'Bearer'; expiresIn?: number; scope: string; connection: string }> {
     const d = await this.request<Record<string, any>>('POST', '/agents/vault/token', { externalUsername: params.user, connection: params.connection, ...(params.scope && { scope: params.scope }) });
@@ -350,9 +350,9 @@ export class TouchQueAgent {
 
   /**
    * Polls until the person approves (resolves with the state holding
-   * `approvalToken`). Throws TouchQueApprovalError when it ends otherwise
+   * `approvalToken`). Throws TouchqueApprovalError when it ends otherwise
    * (rejected, blocked, revoked, expired, stale, redeemed) and
-   * TouchQueTimeoutError after `timeoutMs`. An approval given during a phone
+   * TouchqueTimeoutError after `timeoutMs`. An approval given during a phone
    * call stays `provisional` until the phone confirms it, and four eyes stay
    * `awaiting_second` until the second person answers, so it keeps waiting.
    */
@@ -363,8 +363,8 @@ export class TouchQueAgent {
     for (;;) {
       const state = await this.getApproval(approvalId);
       if (state.status === 'approved' && state.approvalToken) return state;
-      if (ENDED.has(state.status)) throw new TouchQueApprovalError(approvalId, state.status, state.reason);
-      if (Date.now() + intervalMs > end) throw new TouchQueTimeoutError(approvalId, timeoutMs);
+      if (ENDED.has(state.status)) throw new TouchqueApprovalError(approvalId, state.status, state.reason);
+      if (Date.now() + intervalMs > end) throw new TouchqueTimeoutError(approvalId, timeoutMs);
       await new Promise((r) => setTimeout(r, intervalMs));
     }
   }

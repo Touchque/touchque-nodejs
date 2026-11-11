@@ -1,29 +1,29 @@
 // src/orgAgent.ts
-// An organization's AI agent on TouchQue SSO (Organization → AI agents in
+// An organization's AI agent on Touchque SSO (Organization → AI agents in
 // the dashboard): it gets 5-minute tokens for one of the organization's apps,
 // proving who it is with its own key (private_key_jwt) or with the token its
 // platform already gives it (GitHub Actions, GitLab, Google Cloud, Azure,
 // Kubernetes), and binds each token to a DPoP key made when it starts. The
-// app checks the token with TouchQue's JWKS and the DPoP proof on every call.
+// app checks the token with Touchque's JWKS and the DPoP proof on every call.
 //
-//   const agent = new TouchQueOrgAgent({ agentId: 'oagt_…', privateKey: process.env.TQ_ORG_AGENT_KEY });
+//   const agent = new TouchqueOrgAgent({ agentId: 'oagt_…', privateKey: process.env.TQ_ORG_AGENT_KEY });
 //   const res = await agent.fetch('https://payments.acme.com/invoices', { resource: 'tqapp_…' });
 //
 //   // In a GitHub Actions job (permissions: id-token: write), with no key to store:
-//   const agent = new TouchQueOrgAgent({ agentId: 'oagt_…', assertion: githubActionsToken('touchque') });
+//   const agent = new TouchqueOrgAgent({ agentId: 'oagt_…', assertion: githubActionsToken('touchque') });
 //
 // Acting for a member, when its admin allowed it (Organization → AI agents → Access):
 //   const t = await agent.exchangeToken({ subjectToken: membersAccessToken, resource: 'tqapp_…' });   // RFC 8693
 //   const ask = await agent.askMember({ loginHint: 'ada@acme.com', bindingMessage: 'Pay invoice 42',
 //     authorizationDetails: [{ type: 'payment_initiation', instructedAmount: { currency: 'TRY', amount: '500.00' }, … }] });
-//   reply(`Type ${ask.bindingCode} in the TouchQue app.`);
+//   reply(`Type ${ask.bindingCode} in the Touchque app.`);
 //   const approved = await agent.waitForMember(ask);                                                    // CIBA, poll mode
 //
-// The token vault: a member's own account at another service they connected on TouchQue
+// The token vault: a member's own account at another service they connected on Touchque
 // (Organization → AI agents → Accounts agents may use), a fresh provider token, never the refresh token:
 //   const google = await agent.getConnectionToken({ subjectToken: membersAccessToken, connection: 'google' });
 //
-// A shared account (a site with only a password): the member's own TouchQue extension signs in, in their
+// A shared account (a site with only a password): the member's own Touchque extension signs in, in their
 // browser, after their phone approves with the agent named; the agent never sees the password:
 //   const ask = await agent.askToOpenSharedAccount({ account: 'k3J…', loginHint: 'ada@acme.com', message: 'Post the launch photo' });
 //   reply(`Open ${ask.openUrl} in your browser to let me in.`);
@@ -32,16 +32,16 @@
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import axios, { AxiosInstance } from 'axios';
-import { TouchQueAPIError, TouchQueConfigError, TouchQueNetworkError, TouchQueTimeoutError, apiError } from './errors';
+import { TouchqueAPIError, TouchqueConfigError, TouchqueNetworkError, TouchqueTimeoutError, apiError } from './errors';
 import { AGENT_ASSERTION_TYPE, jwkThumbprint } from './agent';
 
 type Jwk = crypto.JsonWebKey & { kid?: string; alg?: string };
 const b64url = (buf: Buffer | string) => Buffer.from(buf).toString('base64url');
 
-export interface TouchQueOrgAgentConfig {
+export interface TouchqueOrgAgentConfig {
   /** The agent's id (oagt_…). Default: TQ_ORG_AGENT_ID. */
   agentId?: string;
-  /** TouchQue SSO. Default: TQ_SSO_URL or https://sso.touchque.com. */
+  /** Touchque SSO. Default: TQ_SSO_URL or https://sso.touchque.com. */
   issuer?: string;
   /** Its own private key (JWK object or JSON, PEM or KeyObject). Default: TQ_ORG_AGENT_KEY. */
   privateKey?: Jwk | string | crypto.KeyObject;
@@ -86,7 +86,7 @@ export interface OrgAgentConnectionToken {
 /** An agent's ask to open a shared account for a member (askToOpenSharedAccount). */
 export interface SharedAccountAsk {
   askId: string;
-  /** The page the member opens in the browser where their TouchQue extension is paired. */
+  /** The page the member opens in the browser where their Touchque extension is paired. */
   openUrl: string;
   status: SharedAccountAskStatus['status'];
   expiresIn: number;
@@ -106,7 +106,7 @@ export interface AskMemberParams extends OrgAgentTokenOptions {
   bindingMessage?: string;
   /** RFC 9396 details (payment_initiation, purchase, data_access, account_change, message_send, generic): the phone shows them. */
   authorizationDetails?: Record<string, unknown>[];
-  /** Seconds (30-600); the phone request lives at most as long as TouchQue lets a push live. */
+  /** Seconds (30-600); the phone request lives at most as long as Touchque lets a push live. */
   requestedExpiry?: number;
 }
 
@@ -129,11 +129,11 @@ export function githubActionsToken(audience = 'touchque'): () => Promise<string>
   return async () => {
     const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
     const bearer = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
-    if (!url || !bearer) throw new TouchQueConfigError('Not in a GitHub Actions job with `permissions: id-token: write`');
+    if (!url || !bearer) throw new TouchqueConfigError('Not in a GitHub Actions job with `permissions: id-token: write`');
     const u = new URL(url);
     u.searchParams.set('audience', audience);
     const res = await axios.get(u.toString(), { headers: { Authorization: `Bearer ${bearer}` }, timeout: 10000 });
-    if (!res.data?.value) throw new TouchQueConfigError('GitHub gave no token');
+    if (!res.data?.value) throw new TouchqueConfigError('GitHub gave no token');
     return res.data.value as string;
   };
 }
@@ -143,7 +143,7 @@ export function fileToken(path: string): () => string {
   return () => readFileSync(path, 'utf8').trim();
 }
 
-export class TouchQueOrgAgent {
+export class TouchqueOrgAgent {
   readonly agentId: string;
   private readonly issuer: string;
   private readonly key: crypto.KeyObject | null = null;
@@ -158,29 +158,29 @@ export class TouchQueOrgAgent {
   private readonly dpopJwk: Jwk;
   private readonly tokens = new Map<string, { token: OrgAgentToken; expiresAt: number }>();
 
-  constructor(config: TouchQueOrgAgentConfig = {}) {
+  constructor(config: TouchqueOrgAgentConfig = {}) {
     const env = typeof process !== 'undefined' ? process.env : {};
     const agentId = config.agentId ?? env.TQ_ORG_AGENT_ID ?? '';
-    if (!/^oagt_[a-z2-9]{20}$/.test(agentId)) throw new TouchQueConfigError('Set TQ_ORG_AGENT_ID (or pass { agentId }): the oagt_… id from Organization → AI agents');
+    if (!/^oagt_[a-z2-9]{20}$/.test(agentId)) throw new TouchqueConfigError('Set TQ_ORG_AGENT_ID (or pass { agentId }): the oagt_… id from Organization → AI agents');
     this.agentId = agentId;
     this.issuer = (config.issuer ?? env.TQ_SSO_URL ?? 'https://sso.touchque.com').replace(/\/+$/, '');
     const url = new URL(this.issuer);
     const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) throw new TouchQueConfigError(`Refusing a plaintext issuer for "${url.hostname}": use https://`);
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) throw new TouchqueConfigError(`Refusing a plaintext issuer for "${url.hostname}": use https://`);
     if (config.assertion) {
       this.assertionSource = config.assertion;
     } else {
       const keyInput = config.privateKey ?? env.TQ_ORG_AGENT_KEY;
-      if (!keyInput) throw new TouchQueConfigError('Pass { privateKey } (or set TQ_ORG_AGENT_KEY), or { assertion } with the platform\'s token');
+      if (!keyInput) throw new TouchqueConfigError('Pass { privateKey } (or set TQ_ORG_AGENT_KEY), or { assertion } with the platform\'s token');
       try {
         this.key = keyInput instanceof crypto.KeyObject ? keyInput
           : typeof keyInput === 'string' ? crypto.createPrivateKey(keyInput.trim().startsWith('{') ? { key: JSON.parse(keyInput), format: 'jwk' } : keyInput)
             : crypto.createPrivateKey({ key: keyInput, format: 'jwk' });
       } catch {
-        throw new TouchQueConfigError('privateKey must be the agent\'s private key: a JWK (object or JSON), a PEM string or a KeyObject');
+        throw new TouchqueConfigError('privateKey must be the agent\'s private key: a JWK (object or JSON), a PEM string or a KeyObject');
       }
       const type = this.key.asymmetricKeyType;
-      if (type !== 'ec' && type !== 'ed25519') throw new TouchQueConfigError('The agent key must be EC P-256 or Ed25519');
+      if (type !== 'ec' && type !== 'ed25519') throw new TouchqueConfigError('The agent key must be EC P-256 or Ed25519');
       this.keyAlg = type === 'ed25519' ? 'EdDSA' : 'ES256';
       const pub = crypto.createPublicKey(this.key).export({ format: 'jwk' }) as Jwk;
       const given = typeof keyInput === 'object' && !(keyInput instanceof crypto.KeyObject) ? keyInput.kid : undefined;
@@ -202,7 +202,7 @@ export class TouchQueOrgAgent {
   /** A DPoP proof (RFC 9449) for one request: with the token, for a call to the app; without, for the token request. */
   dpopProof(method: string, url: string, accessToken?: string): string {
     const u = new URL(url);
-    return TouchQueOrgAgent.jws('ES256', this.dpopKey.privateKey, { typ: 'dpop+jwt', jwk: this.dpopJwk }, {
+    return TouchqueOrgAgent.jws('ES256', this.dpopKey.privateKey, { typ: 'dpop+jwt', jwk: this.dpopJwk }, {
       htm: method.toUpperCase(), htu: `${u.protocol}//${u.host}${u.pathname}`, iat: Math.floor(Date.now() / 1000), jti: crypto.randomUUID(),
       ...(accessToken && { ath: b64url(crypto.createHash('sha256').update(accessToken).digest()) }),
     });
@@ -211,7 +211,7 @@ export class TouchQueOrgAgent {
   private async assertion(tokenUrl: string): Promise<string> {
     if (this.assertionSource) return this.assertionSource();
     const now = Math.floor(Date.now() / 1000);
-    return TouchQueOrgAgent.jws(this.keyAlg, this.key as crypto.KeyObject, { typ: 'JWT', kid: this.kid }, {
+    return TouchqueOrgAgent.jws(this.keyAlg, this.key as crypto.KeyObject, { typ: 'JWT', kid: this.kid }, {
       iss: this.agentId, sub: this.agentId, aud: tokenUrl, iat: now, exp: now + 60, jti: crypto.randomUUID(),
     });
   }
@@ -225,7 +225,7 @@ export class TouchQueOrgAgent {
     try {
       res = await this.client.post(url, form.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(dpop && { DPoP: this.dpopProof('POST', url) }) } });
     } catch (err: any) {
-      throw new TouchQueNetworkError(err?.message || String(err), err?.code);
+      throw new TouchqueNetworkError(err?.message || String(err), err?.code);
     }
     if (res.status !== 200) {
       const data = res.data || {};
@@ -248,7 +248,7 @@ export class TouchQueOrgAgent {
     const cacheKey = `${resource || ''} ${scope || ''}`;
     const hit = this.tokens.get(cacheKey);
     if (hit && hit.expiresAt - Date.now() > 30000) return hit.token;
-    const token = TouchQueOrgAgent.tokenOf(await this.post('/sso/token', { grant_type: 'client_credentials', resource, scope }, true));
+    const token = TouchqueOrgAgent.tokenOf(await this.post('/sso/token', { grant_type: 'client_credentials', resource, scope }, true));
     this.tokens.set(cacheKey, { token, expiresAt: Date.now() + token.expiresIn * 1000 });
     return token;
   }
@@ -258,7 +258,7 @@ export class TouchQueOrgAgent {
    * apps (RFC 8693 token exchange): sub is the member, act the agent.
    */
   async exchangeToken(params: OrgAgentTokenOptions & { subjectToken: string }): Promise<OrgAgentMemberToken> {
-    return TouchQueOrgAgent.tokenOf(await this.post('/sso/token', {
+    return TouchqueOrgAgent.tokenOf(await this.post('/sso/token', {
       grant_type: TOKEN_EXCHANGE_GRANT, subject_token: params.subjectToken, subject_token_type: ACCESS_TOKEN_TYPE,
       resource: params.resource ?? this.resource, scope: params.scope ?? this.scope,
     }, true));
@@ -266,10 +266,10 @@ export class TouchQueOrgAgent {
 
   /**
    * The token vault: a member's own access token at another service (Google,
-   * Microsoft 365, GitHub…) they connected on TouchQue, for a connection that
+   * Microsoft 365, GitHub…) they connected on Touchque, for a connection that
    * names this agent. `subjectToken` is the member's token, as for
-   * exchangeToken; `scope` may only narrow what the member granted. TouchQue
-   * refreshes the token; the refresh token never leaves. TouchQueAPIError
+   * exchangeToken; `scope` may only narrow what the member granted. Touchque
+   * refreshes the token; the refresh token never leaves. TouchqueAPIError
    * invalid_grant: the member has not connected it (or disconnected, or left).
    */
   async getConnectionToken(params: { subjectToken: string; connection: string; scope?: string }): Promise<OrgAgentConnectionToken> {
@@ -286,7 +286,7 @@ export class TouchQueOrgAgent {
   /**
    * Asks to open a shared account (its key, from Organization → AI agents →
    * Access) for a member: they open `openUrl` in the browser where their
-   * TouchQue extension is paired, their phone approves with this agent named,
+   * Touchque extension is paired, their phone approves with this agent named,
    * and the extension signs in there. The agent never sees the password.
    * `message` (at most 64 characters) is shown to the member marked unverified.
    */
@@ -323,8 +323,8 @@ export class TouchQueOrgAgent {
 
   /**
    * Waits for the member's answer (polling at the interval, slower when asked):
-   * the token once they approve; TouchQueAPIError access_denied or
-   * expired_token otherwise, TouchQueTimeoutError after the request expired.
+   * the token once they approve; TouchqueAPIError access_denied or
+   * expired_token otherwise, TouchqueTimeoutError after the request expired.
    */
   async waitForMember(request: MemberRequest): Promise<OrgAgentMemberToken> {
     let interval = Math.max(1, request.interval) * 1000;
@@ -332,15 +332,15 @@ export class TouchQueOrgAgent {
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, interval));
       try {
-        return TouchQueOrgAgent.tokenOf(await this.post('/sso/token', { grant_type: CIBA_GRANT, auth_req_id: request.authReqId }, true));
+        return TouchqueOrgAgent.tokenOf(await this.post('/sso/token', { grant_type: CIBA_GRANT, auth_req_id: request.authReqId }, true));
       } catch (err) {
-        if (!(err instanceof TouchQueAPIError)) throw err;
+        if (!(err instanceof TouchqueAPIError)) throw err;
         if (err.code === 'authorization_pending') continue;
         if (err.code === 'slow_down') { interval += 5000; continue; }
         throw err;
       }
     }
-    throw new TouchQueTimeoutError(request.authReqId, (request.expiresIn + 5) * 1000);
+    throw new TouchqueTimeoutError(request.authReqId, (request.expiresIn + 5) * 1000);
   }
 
   /** The two headers for one call to the app: Authorization: DPoP <token> and its proof. */

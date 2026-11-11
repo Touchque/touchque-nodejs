@@ -1,7 +1,7 @@
 // src/resources/Actions.ts
-// TouchQue Actions: your own code at points of the approval pipeline (before
+// Touchque Actions: your own code at points of the approval pipeline (before
 // the push is sent, the silent sign-in decision, after an approval, fraud
-// reports, device and recovery events). TouchQue runs it in a sandbox; this
+// reports, device and recovery events). Touchque runs it in a sandbox; this
 // resource deploys, tests, replays and observes it.
 //
 //   await tq.actions.deploy('night-alert', {
@@ -14,7 +14,7 @@
 // your own repository.
 
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 
 // ─── What an Action receives ─────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ export interface LoginRequestEvent extends ActionEventBase {
   client: ActionClient;
   risk: { score: number | null; engineAction: 'ALLOW' | 'CHALLENGE' | 'BLOCK' | null; factors: string[]; hardFlags: string[]; trustedNetwork: boolean };
   device: { integrity: string; trusted: boolean; platform: string | null };
-  /** TouchQue's decision before any Action ran. */
+  /** Touchque's decision before any Action ran. */
   decision: { outcome: 'deny' | 'unavailable' | 'passkey' | 'number_match' | 'push'; reason: string | null; reasons: string[] };
 }
 
@@ -110,7 +110,7 @@ export interface FactEvent extends ActionEventBase {
   details: Record<string, unknown>;
 }
 
-// TouchQue Login: the hosted sign-in for your own customers.
+// Touchque Login: the hosted sign-in for your own customers.
 export interface IdentityActionUser {
   id: string | null;
   email: string | null;
@@ -445,21 +445,21 @@ const SECRET_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 function slugPath(slug: string): string {
   if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
-    throw new TouchQueConfigError('An Action slug is 2-63 lowercase letters, digits or - (e.g. "night-alert")');
+    throw new TouchqueConfigError('An Action slug is 2-63 lowercase letters, digits or - (e.g. "night-alert")');
   }
   return `/actions/${slug}`;
 }
 
 function secretPath(name: string): string {
   if (typeof name !== 'string' || !SECRET_RE.test(name)) {
-    throw new TouchQueConfigError('A secret name is capital letters, digits or _ (e.g. SLACK_WEBHOOK_URL)');
+    throw new TouchqueConfigError('A secret name is capital letters, digits or _ (e.g. SLACK_WEBHOOK_URL)');
   }
   return `/actions/secrets/${name}`;
 }
 
 /** Turns a function into Action code: `exports.onExecute = <its source>;`. */
 export function handlerToCode(handler: ActionHandler<any, any>): string {
-  if (typeof handler !== 'function') throw new TouchQueConfigError('handler must be a function');
+  if (typeof handler !== 'function') throw new TouchqueConfigError('handler must be a function');
   const src = handler.toString();
   // A method shorthand ("onExecute(event, api) { … }") is not an expression.
   const expr = /^(async\s+)?(function\b|\(|[A-Za-z_$][\w$]*\s*=>)/.test(src) ? src : `${src.startsWith('async ') ? 'async ' : ''}function ${src.replace(/^async\s+/, '')}`;
@@ -467,7 +467,7 @@ export function handlerToCode(handler: ActionHandler<any, any>): string {
 }
 
 function draftBody(o: DraftOptions): Record<string, unknown> {
-  if (o.code !== undefined && o.handler !== undefined) throw new TouchQueConfigError('Pass code or handler, not both');
+  if (o.code !== undefined && o.handler !== undefined) throw new TouchqueConfigError('Pass code or handler, not both');
   const code = o.handler ? handlerToCode(o.handler) : o.code;
   return {
     ...(o.trigger !== undefined && { trigger: o.trigger }),
@@ -485,7 +485,7 @@ export class ActionSecrets {
 
   /** Stores a value (encrypted; never readable again through the API). */
   async set(name: string, value: string): Promise<ActionSecretInfo> {
-    if (typeof value !== 'string' || !value) throw new TouchQueConfigError('A secret value is a non-empty string');
+    if (typeof value !== 'string' || !value) throw new TouchqueConfigError('A secret value is a non-empty string');
     return this.http.put<ActionSecretInfo>(secretPath(name), { value });
   }
 
@@ -530,7 +530,7 @@ export class Actions {
       ...(options.enabled !== undefined && { enabled: options.enabled }),
       ...(options.activate !== undefined && { activate: options.activate }),
     };
-    if (body.code === undefined && body.template === undefined) throw new TouchQueConfigError('deploy() needs code, handler or template');
+    if (body.code === undefined && body.template === undefined) throw new TouchqueConfigError('deploy() needs code, handler or template');
     return this.http.put<ActionDeployResult>(path, body);
   }
 
@@ -546,7 +546,7 @@ export class Actions {
 
   /** One version, with its code. */
   async version(slug: string, number: number): Promise<ActionVersion> {
-    if (!Number.isInteger(number)) throw new TouchQueConfigError('version() needs a version number');
+    if (!Number.isInteger(number)) throw new TouchqueConfigError('version() needs a version number');
     return this.http.get<ActionVersion>(`${slugPath(slug)}/versions/${number}`);
   }
 
@@ -622,7 +622,7 @@ export class Actions {
 
   /** A template as plain code (to read, or to start a code Action from). */
   async renderTemplate(id: string, trigger: ActionTrigger, params: Record<string, unknown> = {}): Promise<RenderedTemplate> {
-    if (typeof id !== 'string' || !/^[a-z_]{1,64}$/.test(id)) throw new TouchQueConfigError('Unknown template id');
+    if (typeof id !== 'string' || !/^[a-z_]{1,64}$/.test(id)) throw new TouchqueConfigError('Unknown template id');
     return this.http.post<RenderedTemplate>(`/actions/templates/${id}/render`, { trigger, params });
   }
 }

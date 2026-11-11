@@ -3,10 +3,10 @@ import { startFakeApi, FakeApi } from './testing/fakeApi';
 import express from 'express';
 import request from 'supertest';
 import { touchqueRouter } from './router';
-import { TouchQueRejectedError, TouchQueTimeoutError } from './errors';
-import type { TouchQue } from './index';
+import { TouchqueRejectedError, TouchqueTimeoutError } from './errors';
+import type { Touchque } from './index';
 
-function fakeTq(overrides: Record<string, any> = {}): TouchQue {
+function fakeTq(overrides: Record<string, any> = {}): Touchque {
   return {
     auth: {
       generateSecret: vi.fn(async () => ({ secret: 'S3CR3T', qrCodeDataUrl: 'data:image/png;base64,x' })),
@@ -35,10 +35,10 @@ function fakeTq(overrides: Record<string, any> = {}): TouchQue {
       deleteCredential: vi.fn(async () => ({ deleted: true })),
       ...overrides.webauthn,
     },
-  } as unknown as TouchQue;
+  } as unknown as Touchque;
 }
 
-function appWithRouter(tq: TouchQue, routerOptions: Partial<Parameters<typeof touchqueRouter>[1]> = {}) {
+function appWithRouter(tq: Touchque, routerOptions: Partial<Parameters<typeof touchqueRouter>[1]> = {}) {
   const app = express();
   app.use(express.json());
   app.use(
@@ -133,7 +133,7 @@ describe('touchqueRouter — classic login (two-phase)', () => {
     expect(first.status).toBe(202);
     for (let i = 0; i < 12; i++) {
       if (i === 9) api.approve();
-      const poll = await request(app).post('/touchque/login').set('X-TouchQue-Token', first.body.token).send({ externalUsername: 'user@example.com' });
+      const poll = await request(app).post('/touchque/login').set('X-Touchque-Token', first.body.token).send({ externalUsername: 'user@example.com' });
       if (i < 9) expect(poll.status).toBe(202);
       else { expect(poll.status).toBe(200); break; }
     }
@@ -144,8 +144,8 @@ describe('touchqueRouter — classic login (two-phase)', () => {
 
   test('a forged or foreign token is a new attempt and is counted', async () => {
     const app = appWithRouter(api.client);
-    for (let i = 0; i < 5; i++) await request(app).post('/touchque/login').set('X-TouchQue-Token', 'forged').send({ externalUsername: 'user@example.com' });
-    expect((await request(app).post('/touchque/login').set('X-TouchQue-Token', 'forged').send({ externalUsername: 'user@example.com' })).status).toBe(429);
+    for (let i = 0; i < 5; i++) await request(app).post('/touchque/login').set('X-Touchque-Token', 'forged').send({ externalUsername: 'user@example.com' });
+    expect((await request(app).post('/touchque/login').set('X-Touchque-Token', 'forged').send({ externalUsername: 'user@example.com' })).status).toBe(429);
   });
 
   test('POST /login 400s without externalUsername', async () => {
@@ -165,13 +165,13 @@ describe('touchqueRouter — classic login (two-phase)', () => {
     expect(onAuthenticated).not.toHaveBeenCalled();
 
     api.approve();
-    const done = await request(app).post('/touchque/login').set('X-TouchQue-Token', first.body.token).send({ externalUsername: 'user@example.com' });
+    const done = await request(app).post('/touchque/login').set('X-Touchque-Token', first.body.token).send({ externalUsername: 'user@example.com' });
     expect(done.status).toBe(200);
     expect(done.body).toMatchObject({ status: 'success', requestId: first.body.touchque.requestId, assurance: { method: 'push' } });
     expect(onAuthenticated).toHaveBeenCalledTimes(1);
     expect(onAuthenticated.mock.calls[0][2]).toMatchObject({ externalUsername: 'user@example.com', via: 'login' });
 
-    const replay = await request(app).post('/touchque/login').set('X-TouchQue-Token', first.body.token).send({ externalUsername: 'user@example.com' });
+    const replay = await request(app).post('/touchque/login').set('X-Touchque-Token', first.body.token).send({ externalUsername: 'user@example.com' });
     expect(replay.status).not.toBe(200);
     expect(onAuthenticated).toHaveBeenCalledTimes(1);
   });
@@ -180,7 +180,7 @@ describe('touchqueRouter — classic login (two-phase)', () => {
     const app = realApp();
     const first = await request(app).post('/touchque/login').send({ externalUsername: 'user@example.com' });
     api.reject();
-    const rej = await request(app).post('/touchque/login').set('X-TouchQue-Token', first.body.token).send({ externalUsername: 'user@example.com' });
+    const rej = await request(app).post('/touchque/login').set('X-Touchque-Token', first.body.token).send({ externalUsername: 'user@example.com' });
     expect(rej.status).toBe(403);
     expect(rej.body.touchque.state).toBe('rejected');
     const fresh = await request(app).post('/touchque/login').send({ externalUsername: 'new@example.com' });
@@ -188,7 +188,7 @@ describe('touchqueRouter — classic login (two-phase)', () => {
     expect(fresh.body.touchque.state).toBe('enroll');
   });
 
-  test('TouchQue unreachable → 503 without internal details', async () => {
+  test('Touchque unreachable → 503 without internal details', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const app = realApp();
     await api.close();
@@ -245,7 +245,7 @@ describe('touchqueRouter — passkeys', () => {
     expect((tq.webauthn as any).authenticateOptions).toHaveBeenCalledWith({ requestId: 'req_9' });
   });
 
-  test('POST /passkey/login/verify opens the session for the user TouchQue approved, ignoring a name from the browser', async () => {
+  test('POST /passkey/login/verify opens the session for the user Touchque approved, ignoring a name from the browser', async () => {
     const onAuthenticated = vi.fn();
     const tq = fakeTq();
     (tq.webauthn as any).authenticateVerify = vi.fn(async () => ({ success: true, message: 'approved', externalUsername: 'attacker@example.com', requestId: 'req_9' }));
@@ -262,7 +262,7 @@ describe('touchqueRouter — passkeys', () => {
     );
   });
 
-  test('POST /passkey/login/verify never opens a session when TouchQue does not name the user (older API)', async () => {
+  test('POST /passkey/login/verify never opens a session when Touchque does not name the user (older API)', async () => {
     const onAuthenticated = vi.fn();
     const app = appWithRouter(fakeTq(), { onAuthenticated });
     await request(app).post('/touchque/passkey/login/verify').send({ requestId: 'req_9', response: {}, externalUsername: 'victim@example.com' });
@@ -294,7 +294,7 @@ describe('touchqueRouter — offline sign', () => {
   // => offline routes off) is covered right below.
   const UNBOUND = { allowOfflineWithoutFirstFactor: true };
 
-  test('A8: without getLoginUser the offline routes are off by default (403, TouchQue never called)', async () => {
+  test('A8: without getLoginUser the offline routes are off by default (403, Touchque never called)', async () => {
     const tq = fakeTq();
     const app = appWithRouter(tq, { rateLimit: false });
     for (const [path, body] of [['/touchque/offline/challenge', { externalUsername: 'victim@example.com' }], ['/touchque/offline/verify', { challengeId: 'c1', code: 'AAAAAAA' }], ['/touchque/offline/totp', { externalUsername: 'victim@example.com', code: 'AAAAAAA' }]] as const) {
@@ -360,7 +360,7 @@ describe('touchqueRouter — offline sign', () => {
 });
 
 /** Same client IP on every request (loopback can arrive as IPv4 or IPv6, which splits per-IP counters). */
-function fixedIpApp(tq: TouchQue, routerOptions: Record<string, unknown>) {
+function fixedIpApp(tq: Touchque, routerOptions: Record<string, unknown>) {
   const app = express();
   app.set('trust proxy', true);
   app.use(express.json());
@@ -448,7 +448,7 @@ describe('touchqueRouter — abuse protection (pre-auth routes)', () => {
 });
 
 describe('touchqueRouter — phishing-resistant policy', () => {
-  test('POST /login answers 202 passkey_required with the requestId when TouchQue demands a passkey (no push)', async () => {
+  test('POST /login answers 202 passkey_required with the requestId when Touchque demands a passkey (no push)', async () => {
     const api = await startFakeApi();
     api.linked.add('a@example.com');
     api.opts.passkeyOnly = true;
@@ -492,13 +492,13 @@ describe('touchqueRouter — adding a passkey', () => {
     expect(first.body.touchque).toMatchObject({ state: 'waiting', number: '47' });
     expect(api.calls.find((c) => c.path === '/login/request')?.body.type).toBe('PASSKEY_ENROLL');
 
-    const waiting = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    const waiting = await request(app).post('/touchque/passkey/register/options').set('X-Touchque-Token', first.body.token).send({});
     expect(waiting.status).toBe(202);
     api.approve();
-    const done = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    const done = await request(app).post('/touchque/passkey/register/options').set('X-Touchque-Token', first.body.token).send({});
     expect(done.status).toBe(200);
     expect(done.body.challenge).toBe('reg-challenge');
-    const again = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    const again = await request(app).post('/touchque/passkey/register/options').set('X-Touchque-Token', first.body.token).send({});
     expect(again.status).not.toBe(200);
   });
 
@@ -507,7 +507,7 @@ describe('touchqueRouter — adding a passkey', () => {
     const app = appWithRouter(api.client);
     const first = await request(app).post('/touchque/passkey/register/options').send({});
     api.reject();
-    const res = await request(app).post('/touchque/passkey/register/options').set('X-TouchQue-Token', first.body.token).send({});
+    const res = await request(app).post('/touchque/passkey/register/options').set('X-Touchque-Token', first.body.token).send({});
     expect(res.status).toBe(403);
     expect(api.calls.filter((c) => c.path === '/webauthn/register/options' && c.body.approvalRequestId)).toHaveLength(0);
   });

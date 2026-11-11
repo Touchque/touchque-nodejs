@@ -1,6 +1,6 @@
 # @touchque/node
 
-The official Node.js server SDK for [TouchQue](https://touchque.com) — biometric push 2FA,
+The official Node.js server SDK for [Touchque](https://touchque.com) — biometric push 2FA,
 passkeys, and offline approval codes, added to any backend with one line per route.
 
 [![npm version](https://img.shields.io/npm/v/@touchque/node.svg)](https://www.npmjs.com/package/@touchque/node)
@@ -17,7 +17,7 @@ npm install @touchque/node
 
 ## Setup
 
-Get an API key and secret from your [TouchQue Dashboard](https://dashboard.touchque.com),
+Get an API key and secret from your [Touchque Dashboard](https://dashboard.touchque.com),
 then set them as environment variables:
 
 ```bash
@@ -25,23 +25,32 @@ TQ_API_KEY=tq_auth_your_key
 TQ_API_SECRET=your_api_secret
 ```
 
-The client picks these up automatically — `new TouchQue()` with no arguments.
+The client picks these up automatically — `new Touchque()` with no arguments.
 
 ## Quick start (Express)
 
 ```typescript
 import express from 'express';
-import { requireTouchQue } from '@touchque/node';
+import { requireTouchque } from '@touchque/node';
+import { transfers } from './transfers'; // your own records
 
 const app = express();
 app.use(express.json());
 
 app.post('/transfer',
-  requireTouchQue('SEND_MONEY', {
-    details: (req) => ({ Amount: `${req.body.amount} EUR`, To: req.body.iban }),
+  requireTouchque('SEND_MONEY', {
+    // Who approves. Default: req.user.email || req.user.id || req.user.username, from your auth.
+    user: (req) => req.user?.email,
+    // What the phone shows and the approval is bound to. Build it from your own records,
+    // not from what the browser sent: here the transfer the user prepared before.
+    details: async (req) => {
+      const t = await transfers.draft(req.user.id, req.body.transferId);
+      return { Amount: `${t.amount} EUR`, To: t.iban };
+    },
   }),
-  (req, res) => {
+  async (req, res) => {
     // Only reached once the user approved on their phone.
+    await transfers.send(req.user.id, req.body.transferId);
     res.json({ ok: true, assurance: req.touchque.assurance });
   }
 );
@@ -52,23 +61,38 @@ app.listen(3000);
 That's the whole integration for one route. What actually happens:
 
 1. The first request comes in with no pending approval → the middleware calls
-   TouchQue, sends a push to the user's phone, and answers **`202 { touchque, token }`**
+   Touchque, sends a push to the user's phone, and answers **`202 { touchque, token }`**
    instead of running your handler.
 2. Your frontend shows `touchque` in its own UI — a matching number for the
    user to tap on their phone, or a QR code the first time they link the app —
-   then sends the *same request* again with header `X-TouchQue-Token: <token>`
+   then sends the *same request* again with header `X-Touchque-Token: <token>`
    (see [`@touchque/web`](https://www.npmjs.com/package/@touchque/web), which does this loop for you).
 3. Once the user approves, that retried request reaches your handler exactly
    once, with `req.touchque` populated (`assurance`, `approvalProof`, …).
 
 No hosted page, no redirect, no new domain — you keep your own UI end to end.
 
+## Action types
+
+`'SEND_MONEY'` above is an action type: one kind of approval, with the title the phone shows and
+whether it is critical. Define each one once, in the dashboard (**Developers → Action types**)
+or from code:
+
+```typescript
+await tq.actionTypes.define('SEND_MONEY', { name: 'Send money', critical: true });
+```
+
+The guard refuses what is not ready. A name that is not defined is a setup error
+(`TouchqueConfigError`, "Unknown action …"): the guard answers 500 with `reason: 'misconfigured'`. A type
+turned off in the dashboard answers 403 with `reason: 'action_disabled'`, which stops that kind of
+approval at once, without a deploy.
+
 ## The three primitives, if you don't use a framework adapter
 
 ```typescript
-import { TouchQue } from '@touchque/node';
+import { Touchque } from '@touchque/node';
 
-const tq = new TouchQue(); // from TQ_API_KEY / TQ_API_SECRET
+const tq = new Touchque(); // from TQ_API_KEY / TQ_API_SECRET
 
 const step = await tq.start('SEND_MONEY', {
   user: 'jane@acme.com',
@@ -94,8 +118,8 @@ second call.
 
 ## Framework adapters
 
-- **Express**: `requireTouchQue(action, options?)` — shown above.
-- **Next.js / Fetch API route handlers**: `withTouchQue(action, options?)`. It sends no end-user
+- **Express**: `requireTouchque(action, options?)` — shown above.
+- **Next.js / Fetch API route handlers**: `withTouchque(action, options?)`. It sends no end-user
   address unless you say where it comes from: `ip: ipFromVercel` (Vercel), `ip: ipFromCloudflare`
   (only when your origin accepts Cloudflare traffic only), `trustedProxyHops: 1` (one proxy of yours
   in front), or your own function. Never the leftmost `X-Forwarded-For` hop: the client controls it.
@@ -120,15 +144,15 @@ app.use(touchqueRouter(tq, {
 - **`touchqueRelay`** (Next.js App Router, Hono, Remix, SvelteKit, Bun, Deno, Workers): the same routes and checks
   as `touchqueRouter`, as one handler that takes a `Request` and returns a `Response`; no express needed. Set
   `getLoginUser` exactly as for the router (the offline routes stay off without it). Fetch has no socket address, so
-  say where the end user's address comes from (`ip` or `trustedProxyHops`, as for `withTouchQue`); without one the
+  say where the end user's address comes from (`ip` or `trustedProxyHops`, as for `withTouchque`); without one the
   per-IP limits are skipped and only the per-username ones apply. `basePath` (default `/touchque`) is where it is
   mounted; another path answers 404.
 
 ```typescript
 // app/touchque/[...path]/route.ts
-import { TouchQue, touchqueRelay, ipFromVercel } from '@touchque/node';
+import { Touchque, touchqueRelay, ipFromVercel } from '@touchque/node';
 
-const relay = touchqueRelay(new TouchQue(), {
+const relay = touchqueRelay(new Touchque(), {
   getUserId: async () => (await auth())?.user?.email,
   getLoginUser: async () => (await passwordStep())?.email,
   ip: ipFromVercel,
@@ -140,15 +164,15 @@ const relay = touchqueRelay(new TouchQue(), {
 export { relay as GET, relay as POST, relay as DELETE };
 ```
 
-Both relays rate limit with `FixedWindowLimiter`, which is exported for your own routes (`withTouchQue`, a
+Both relays rate limit with `FixedWindowLimiter`, which is exported for your own routes (`withTouchque`, a
 hand-written relay). `hit(key, limit)` counts one request and returns the seconds to wait once `key` is over `limit`
 in the window (0 until then); it is in memory, per process.
 
 ```typescript
-import { FixedWindowLimiter, withTouchQue, ipFromVercel } from '@touchque/node';
+import { FixedWindowLimiter, withTouchque, ipFromVercel } from '@touchque/node';
 
 const limiter = new FixedWindowLimiter();   // { windowMs: 60000, perIp: 20, perUser: 5 }
-const transfer = withTouchQue('SEND_MONEY', handler, { user, ip: ipFromVercel });
+const transfer = withTouchque('SEND_MONEY', handler, { user, ip: ipFromVercel });
 
 export async function POST(req: Request) {
   const wait = limiter.hit(`ip|transfer|${ipFromVercel(req)}`, limiter.perIp);
@@ -161,13 +185,13 @@ export async function POST(req: Request) {
 
 Push approval and offline codes stop password reuse and push fatigue, but a
 real-time phishing proxy can still relay them. A passkey can't be phished: the
-browser signs your site's real origin and TouchQue refuses any other
+browser signs your site's real origin and Touchque refuses any other
 (NIST SP 800-63B-4 §3.2.5).
 
 1. Set your passkey domain in the Dashboard (Security Policy → Passkeys).
 2. Let users register one via `tq.webauthn` (server) + `@touchque/web`'s
    `passkeys.register()` (browser).
-3. Optionally require it for critical actions or every sign-in — TouchQue then
+3. Optionally require it for critical actions or every sign-in — Touchque then
    skips the push and your route resolves `passkey_required` instead.
 4. Check `assurance.phishingResistant` before treating a session as high-assurance.
 
@@ -185,7 +209,7 @@ const { approved } = await tq.offline.verify({ challengeId: ch.challengeId, code
 ```
 
 **A QR that follows a push.** Pass the push's `requestId` when the offline QR is the fallback for a
-push the user already started (`requireTouchQue` / `touchqueRouter` do this for you):
+push the user already started (`requireTouchque` / `touchqueRouter` do this for you):
 
 ```typescript
 const ch = await tq.offline.challenge({ externalUsername, type: 'LOGIN', requestId: step.requestId });
@@ -216,7 +240,7 @@ app.post('/webhooks/touchque', express.raw({ type: 'application/json' }), (req, 
     else if (payload.status === 'REJECTED' && payload.reason === WebhookReasons.USER_REPORTED_COACHED) lockAccount(payload.externalUsername);
     res.sendStatus(200);
   } catch {
-    res.sendStatus(403); // not from TouchQue
+    res.sendStatus(403); // not from Touchque
   }
 });
 ```
@@ -236,16 +260,16 @@ pretending to be IT). All are in `WebhookEvents`.
 
 ## Vishing Shield (someone on the phone guiding the user)
 
-The phone tells TouchQue, signed with its hardware key, whether a call was active (or just ended), the screen
+The phone tells Touchque, signed with its hardware key, whether a call was active (or just ended), the screen
 was shared or the phone remote-controlled when the user tapped Approve. Depending on the server's mode:
 
 - **Passkey instead.** A user with a passkey finishes in the browser: the request stays open and turns into
   `passkey_required` mid-flight. The step-up flow (`start` / `check`, the guard, `touchqueRouter`) and
   `@touchque/web` handle it; the blocking `login.waitForApproval` / `login.verify` / `tq.protect` throw
-  `TouchQuePasskeyRequiredError` with `reason: 'step_up'`. No offline or recovery code can finish such a request.
+  `TouchquePasskeyRequiredError` with `reason: 'step_up'`. No offline or recovery code can finish such a request.
 - **Refused.** A critical action without a passkey is rejected (`reason: 'vishing_suspected'`).
 - **Provisional.** Anything else is approved with `provisional: true` (on the `Approval`, `GET /login/status`,
-  consume and the SUCCESS webhook). Let the user in, but treat the session as limited: TouchQue refuses the
+  consume and the SUCCESS webhook). Let the user in, but treat the session as limited: Touchque refuses the
   user's critical actions (`blocked` / `provisional`) until the phone re-confirms after the call
   (`APPROVAL_RECONFIRMED`). `APPROVAL_REVOKED` (`reason: 'COACHED' | 'UNDO'`) means end the session; an approval
   revoked before you consumed it can no longer be consumed (409 `revoked`).
@@ -255,11 +279,11 @@ sign-in and sends a beacon to it, so a real-time phishing proxy in front of your
 approval is refused (`reason: 'phishing_origin'`) and the phone warns the user. Allow the canary host in your
 Content-Security-Policy (`img-src` and `connect-src`).
 
-## TouchQue Actions (your code in the approval pipeline)
+## Touchque Actions (your code in the approval pipeline)
 
 Alerts, step-ups and refusals by country, local time, role or amount, passkeys
 for admins — from a template or a few lines of JavaScript, replayed against your
-real recent sign-ins before they go live. Full guide: [Actions](https://support.touchque.com/actions).
+real recent sign-ins before they go live. Full guide: [support.touchque.com/actions](https://support.touchque.com/actions).
 
 ```ts
 import type { LoginRequestEvent, LoginRequestApi } from '@touchque/node';
@@ -284,7 +308,7 @@ const report = await tq.actions.dryRun({ trigger: 'login.request', handler: myDr
 ```
 
 Give Actions what only your server knows with `context` (never shown on the phone):
-`requireTouchQue('SEND_MONEY', { context: (req) => ({ roles: req.user.roles, amount: req.body.amount }) })`.
+`requireTouchque('SEND_MONEY', { context: (req) => ({ roles: req.user.roles, amount: req.body.amount }) })`.
 Loosening calls (`skipNumberMatch`, `overrideBlock`, `allowSilent`) need a capability an
 admin approves on their phone. Action types moved to `tq.actionTypes` in 4.0.
 
@@ -294,7 +318,7 @@ Register each agent with its **public** key; the private key stays where the age
 with its own key and gets a 10-minute token bound to that key (DPoP), so a leaked token is useless on its own.
 
 ```ts
-import { TouchQue, TouchQueAgent, generateAgentKey } from '@touchque/node';
+import { Touchque, TouchqueAgent, generateAgentKey } from '@touchque/node';
 
 // Once, from your server (needs an API key with the agents:write scope):
 const { privateJwk, publicJwk } = generateAgentKey();           // or generate it where the agent runs
@@ -308,7 +332,7 @@ const agent = await tq.agents.create({
 // Store agent.id and privateJwk in the agent's secret store (TQ_AGENT_ID, TQ_AGENT_KEY).
 
 // In the agent:
-const me = await new TouchQueAgent().me();   // reads TQ_AGENT_ID / TQ_AGENT_KEY
+const me = await new TouchqueAgent().me();   // reads TQ_AGENT_ID / TQ_AGENT_KEY
 ```
 
 Stop an agent at once with `tq.agents.suspend(id)` or every agent with `tq.agents.setKillSwitch(true)`; its
@@ -317,13 +341,13 @@ tokens stop working immediately.
 ### The agent asks, the person approves on the phone, your server executes once
 
 ```ts
-// In the agent: structured details, never free text; TouchQue draws the phone's rows.
+// In the agent: structured details, never free text; Touchque draws the phone's rows.
 const ask = await agent.requestApproval({
   user: 'jane@example.com', type: 'PAY_INVOICE', reason: 'October rent',
   authorizationDetails: [{ type: 'payment_initiation', instructedAmount: { currency: 'TRY', amount: '500.00' },
     creditorName: 'Jane Doe', creditorAccount: { iban: 'TR33 0006 1005 1978 6457 8413 26' } }],
 });
-reply(`Type ${ask.challengeCode} in the TouchQue app to approve.`);
+reply(`Type ${ask.challengeCode} in the Touchque app to approve.`);
 const { approvalToken } = await agent.waitForApproval(ask.approvalId);
 
 // In your executor, right before paying: used once, and only for what you are about to do.
@@ -342,17 +366,17 @@ LangChain's `tool()`, the Vercel AI SDK's `execute`, LlamaIndex's `FunctionTool`
 and the OpenAI Agents SDK's `tool({ execute })`.
 
 ```ts
-import { withTouchQueApproval, currentApproval, approveInterruptionsWithTouchQue, touchqueCanUseTool, guardMcpClient } from '@touchque/node';
+import { withTouchqueApproval, currentApproval, approveInterruptionsWithTouchque, touchqueCanUseTool, guardMcpClient } from '@touchque/node';
 
 const policy = {
   agent, user: 'jane@example.com', type: 'PAY_INVOICE',
   details: ({ iban, amount }) => [{ type: 'payment_initiation', instructedAmount: { currency: 'TRY', amount }, creditorAccount: { iban } }],
-  onChallenge: (s) => reply(`Type ${s.challengeCode} in the TouchQue app to approve.`),
+  onChallenge: (s) => reply(`Type ${s.challengeCode} in the Touchque app to approve.`),
 };
-const payInvoice = tool(withTouchQueApproval(async ({ iban, amount }) => bank.pay(iban, amount, currentApproval().approvalToken), policy), { name: 'pay_invoice', schema });
+const payInvoice = tool(withTouchqueApproval(async ({ iban, amount }) => bank.pay(iban, amount, currentApproval().approvalToken), policy), { name: 'pay_invoice', schema });
 
 // OpenAI Agents SDK (tools with needsApproval): ask the phone for each interruption, then resume.
-const state = await approveInterruptionsWithTouchQue(result, { pay_invoice: policy });
+const state = await approveInterruptionsWithTouchque(result, { pay_invoice: policy });
 // Claude Agent SDK: query({ prompt, options: { canUseTool: touchqueCanUseTool({ pay_invoice: policy }) } })
 // Any MCP client: the token reaches the server in _meta['touchque/approvalToken'].
 const guarded = guardMcpClient(mcpClient, { pay_invoice: policy });
@@ -362,7 +386,7 @@ renews it) and when their owner leaves the organization.
 
 ### Cross App Access (ID-JAG) and A2A agent cards
 
-An organization's identity provider (TouchQue SSO) can let one of its apps reach another service for a member with no consent screen (Cross App Access, ID-JAG, an open IETF draft): the app trades the member's ID token for an ID-JAG, then the ID-JAG for an access token at the other service. If you run an authorization server, the verifier checks an ID-JAG (issuer, single audience, your client, expiry, `typ`) and uses it once. Before your agent trusts another agent's A2A card, check its signatures (A2A 1.0 §8.4: JWS over the RFC 8785 canonical card); keys named by `jku` are only fetched from the card's own host or hosts you trust.
+An organization's identity provider (Touchque SSO) can let one of its apps reach another service for a member with no consent screen (Cross App Access, ID-JAG, an open IETF draft): the app trades the member's ID token for an ID-JAG, then the ID-JAG for an access token at the other service. If you run an authorization server, the verifier checks an ID-JAG (issuer, single audience, your client, expiry, `typ`) and uses it once. Before your agent trusts another agent's A2A card, check its signatures (A2A 1.0 §8.4: JWS over the RFC 8785 canonical card); keys named by `jku` are only fetched from the card's own host or hosts you trust.
 
 ```ts
 import { requestIdJag, redeemIdJag, IdJagVerifier, verifyAgentCard } from '@touchque/node';
@@ -423,16 +447,16 @@ a repeat. `SECURITY_EVENT_TYPES` maps the short names to the event type URIs.
 ## Silent sign-ins (stop asking when nothing is new)
 
 A user who approved on their phone in this browser a little while ago, from the same phone, network and country,
-with no risk signal since, does not need another push. TouchQue's risk engine decides; your server only skips the
+with no risk signal since, does not need another push. Touchque's risk engine decides; your server only skips the
 push when it says so.
 
-1. In the browser, `@touchque/web` 1.4.0 with `createTouchQueWeb({ browserKey: true })` keeps a non-extractable
-   key for your site and sends a fresh, signed proof of it in the `X-TouchQue-Browser` header.
+1. In the browser, `@touchque/web` 2.0.0 with `createTouchqueWeb({ browserKey: true })` keeps a non-extractable
+   key for your site and sends a fresh, signed proof of it in the `X-Touchque-Browser` header.
 2. On the server, turn on `silentSignIn`:
 
 ```typescript
 app.post('/login/2fa',
-  requireTouchQue('LOGIN', { user: (req) => req.session.passwordOkUser, silentSignIn: true }),
+  requireTouchque('LOGIN', { user: (req) => req.session.passwordOkUser, silentSignIn: true }),
   (req, res) => {
     // req.touchque.assurance.method is 'silent' when no push was needed.
     res.json({ ok: true });
@@ -445,7 +469,7 @@ app.use('/touchque', touchqueRouter(tq, {
 }));
 ```
 
-`withTouchQue` takes the same option. With it on, a new attempt that carries the header first calls
+`withTouchque` takes the same option. With it on, a new attempt that carries the header first calls
 `tq.risk.check`. Only an answer of exactly `prompt: false` approves it at once, with nothing sent to the phone:
 the approval has `assurance: { method: 'silent', phishingResistant: false }`, `confirmedVia: 'SILENT'`,
 `requestId: 'silent'` and `reasons` (`known_browser`, `recent_approval`, `same_phone`, `familiar_network`,
@@ -453,7 +477,7 @@ the approval has `assurance: { method: 'silent', phishingResistant: false }`, `c
 check, starts the usual push with the proof attached, so its approval makes the browser known. Polling with the
 token never checks again.
 
-TouchQue only lets a sign-in through silently when all of this holds: the browser proved its key and was approved
+Touchque only lets a sign-in through silently when all of this holds: the browser proved its key and was approved
 on the phone (a confirmed push, not one approved during a call, or a passkey) within your `maxAgeSeconds` and at most
 7 days ago, by the phone that is linked now; the country and the network were seen in the user's earlier approved
 sign-ins; the risk engine allows it with no risk signal; and the action is an everyday one. A critical action always
@@ -472,7 +496,7 @@ await tq.risk.forgetBrowsers({ externalUsername: user });                    // 
 ```
 
 Forget a user's browsers after a password reset or a "sign out everywhere". `risk.check` reads the answer fail-closed:
-`prompt` is `false` only when TouchQue answered the boolean `false`.
+`prompt` is `false` only when Touchque answered the boolean `false`.
 
 ## Never Locked Out (lost, dead or new phone)
 
@@ -487,7 +511,7 @@ await tq.recovery.setVouchers({ externalUsername: user, vouchers: ['bo@acme.com'
 
 // "I lost my phone", after the password:
 const r = await tq.recovery.start({ externalUsername: user, clientIp: req.ip, displayName: 'Ada', fallbackVouchers: admins });
-showQr(r.bindUri);                     // the TouchQue app on the new phone scans it
+showQr(r.bindUri);                     // the Touchque app on the new phone scans it
 const now = await tq.recovery.status(r.recoveryId);
 now.vouchers.forEach((v) => show(v.externalUsername, v.code)); // read each code to that colleague
 // now.status: AWAITING_DEVICE → VOUCHING → COOLING → COMPLETED (or VETOED / EXPIRED / FAILED)
@@ -502,7 +526,7 @@ Every step is a hash-chained receipt (`receipts`); a voucher's step carries the 
 
 Every approval decision names a short case code (`K7P-2QX`: 6 characters, no I, O, 0 or 1). A user who was asked to
 match a number, needed a passkey or was refused reads it out to your support team, and the team opens the whole
-decision by it in the TouchQue dashboard (Logs → Look up a case): what went in, each check's verdict (the access rule
+decision by it in the Touchque dashboard (Logs → Look up a case): what went in, each check's verdict (the access rule
 that matched, the risk signals that were acted on and the ones only measured), and the single change that would have
 let it through. No screenshots, no log digging. The code opens nothing on its own: only your workspace sees its
 decisions.
@@ -513,11 +537,11 @@ const step = await tq.start('WITHDRAW', { user, ip: req.ip });
 try {
   await tq.login.request({ externalUsername: user, type: 'LOGIN' });
 } catch (err) {
-  if (err instanceof TouchQueAPIError && err.caseCode) show(`Tell your support team: ${err.caseCode}`);
+  if (err instanceof TouchqueAPIError && err.caseCode) show(`Tell your support team: ${err.caseCode}`);
 }
 ```
 
-`caseCode` is on `LoginRequestResponse`, `RiskCheckResult`, `TouchQueAPIError` and every step (the guard keeps it
+`caseCode` is on `LoginRequestResponse`, `RiskCheckResult`, `TouchqueAPIError` and every step (the guard keeps it
 while it waits); `reasons` says why number matching or a passkey is needed, from a fixed list, never a score.
 
 ## Blocking `verify()` and number matching
@@ -537,12 +561,12 @@ await tq.login.verify({
 ```
 
 It gets `{ requestId, challengeCode?, expiresAt, reasons?, caseCode? }`. It is not called when only a passkey can
-approve (`verify()` throws `TouchQuePasskeyRequiredError` first). An error it throws, or a promise it returns that
+approve (`verify()` throws `TouchquePasskeyRequiredError` first). An error it throws, or a promise it returns that
 rejects, is logged and ignored: `verify()` keeps waiting. `tq.protect()` takes the same `onChallenge`. In a web
 request, where the page hears nothing until you answer, use the router or `tq.start()`: their first answer already
 carries the number.
 
-## Verifying the device proof (no need to trust TouchQue)
+## Verifying the device proof (no need to trust Touchque)
 
 When the phone holds a hardware key, every approval carries `approvalProof`: the
 phone's own signature over the request id, action, number-match code and the
@@ -563,7 +587,7 @@ Without `expectedPublicKey` it returns `false` unless you pass
 ## Reporting fraud
 
 Learned later that an approved request was fraud (a chargeback, an account
-takeover)? Report it — it is the strongest signal TouchQue's risk engine learns
+takeover)? Report it — it is the strongest signal Touchque's risk engine learns
 from, and it stays in your audit log:
 
 ```typescript
@@ -573,7 +597,7 @@ await tq.login.reportFraud(requestId, { reason: 'chargeback', note: 'Disputed by
 
 ## Pairing a browser by QR code
 
-Your page shows a QR code, the person scans it with the TouchQue app, and the phone that scanned is the one asked to approve, with number matching. Your page sends the thumbprint of its browser key (`@touchque/web` `browserKey.thumbprint()`); the nonce in the QR never leaves your server (TouchQue keeps its hash).
+Your page shows a QR code, the person scans it with the Touchque app, and the phone that scanned is the one asked to approve, with number matching. Your page sends the thumbprint of its browser key (`@touchque/web` `browserKey.thumbprint()`); the nonce in the QR never leaves your server (Touchque keeps its hash).
 
 ```ts
 const p = await tq.qrPairings.create({ keyThumbprint, clientIp: req.ip, userAgent: req.get('user-agent') });
@@ -587,7 +611,7 @@ if (now.state === 'confirmed') await tq.login.request({ externalUsername: now.ex
 
 ## A code typed back on the phone
 
-When a sign-in needs a code another service sent the person (a text message, WhatsApp, e-mail), ask them to type it on the phone instead. The phone encrypts it to a one-time key you made for this request: TouchQue only ever holds the ciphertext. Such a request lives 5 minutes.
+When a sign-in needs a code another service sent the person (a text message, WhatsApp, e-mail), ask them to type it on the phone instead. The phone encrypts it to a one-time key you made for this request: Touchque only ever holds the ciphertext. Such a request lives 5 minutes.
 
 ```ts
 const key = newCodeReplyKey();   // keep key.privateKey for this request
@@ -598,7 +622,7 @@ const code = status.reply ? openCodeReply(key.privateKey, sent.requestId, status
 
 ## Safe Guard (Safe transactions approved on the phone)
 
-TouchQueSafeGuard is a transaction guard for a Safe: a transaction runs only with approvals signed by the P-256 keys on its approvers' phones. You send the raw transaction; the phone decodes it itself, shows its own rows and signs what it computed with a key only its biometrics unlock. Delegatecalls, changes to the Safe and proxy upgrades are governance: scheduled, time-locked and vetoable. A phone without that key yet gets `409 crypto_key_missing`.
+TouchqueSafeGuard is a transaction guard for a Safe: a transaction runs only with approvals signed by the P-256 keys on its approvers' phones. You send the raw transaction; the phone decodes it itself, shows its own rows and signs what it computed with a key only its biometrics unlock. Delegatecalls, changes to the Safe and proxy upgrades are governance: scheduled, time-locked and vetoable. A phone without that key yet gets `409 crypto_key_missing`.
 
 ```ts
 const sent = await tq.safeGuard.request({
@@ -626,40 +650,40 @@ if (purpose === 'approve') {
 }
 ```
 
-`verifySafeApproval` makes the guard's check off chain, so a co-signer or your own server never has to trust TouchQue: it computes the Safe transaction hash (EIP-712) and the governance hash from the raw fields, rebuilds the 149-byte message the phone signed and checks the P-256 signature for one purpose: `approve` unless you pass `purpose: 'schedule'`, so an approval to schedule a governance change (which leaves out the Safe nonce and gas) never passes as one to execute. It refuses a high `s`, an approval that expired or is valid for more than a day, another approver index, and, when you pass `rows` or `displayDigest` from your own decoding, rows the phone did not show. `reason` is `approval_malformed`, `public_key_invalid`, `approver_index_mismatch`, `approval_expired`, `rows_differ`, `high_s` or `signature_invalid`. `safeTxHash`, `safeGovernanceHash`, `safeApprovalMessage` and `safeDisplayDigest` are exported too.
+`verifySafeApproval` makes the guard's check off chain, so a co-signer or your own server never has to trust Touchque: it computes the Safe transaction hash (EIP-712) and the governance hash from the raw fields, rebuilds the 149-byte message the phone signed and checks the P-256 signature for one purpose: `approve` unless you pass `purpose: 'schedule'`, so an approval to schedule a governance change (which leaves out the Safe nonce and gas) never passes as one to execute. It refuses a high `s`, an approval that expired or is valid for more than a day, another approver index, and, when you pass `rows` or `displayDigest` from your own decoding, rows the phone did not show. `reason` is `approval_malformed`, `public_key_invalid`, `approver_index_mismatch`, `approval_expired`, `rows_differ`, `high_s` or `signature_invalid`. `safeTxHash`, `safeGovernanceHash`, `safeApprovalMessage` and `safeDisplayDigest` are exported too.
 
 ## Errors
 
-All SDK errors extend `TouchQueError`: `TouchQueAPIError`, `TouchQueNetworkError`,
-`TouchQueRejectedError`, `TouchQueTimeoutError`, `TouchQueWebhookSignatureError`,
-`TouchQueConfigError`, `TouchQuePasskeyRequiredError`.
+All SDK errors extend `TouchqueError`: `TouchqueAPIError`, `TouchqueNetworkError`,
+`TouchqueRejectedError`, `TouchqueTimeoutError`, `TouchqueWebhookSignatureError`,
+`TouchqueConfigError`, `TouchquePasskeyRequiredError`.
 
-A feature your organization cannot use here answers 403 as a `TouchQueFeatureError` (still a `TouchQueAPIError`) with `feature` (`device_risk`, `ai_agents`…) and `reason`: `TouchQueFeatureNotInPlanError`, `TouchQueFeatureReadOnlyError` or `TouchQueFeatureOffError` — not in its plan (an owner or admin adds it in the TouchQue dashboard), being turned off (reads work for 14 days, changes are refused) or switched off on this TouchQue deployment.
+A feature your organization cannot use here answers 403 as a `TouchqueFeatureError` (still a `TouchqueAPIError`) with `feature` (`device_risk`, `ai_agents`…) and `reason`: `TouchqueFeatureNotInPlanError`, `TouchqueFeatureReadOnlyError` or `TouchqueFeatureOffError` — not in its plan (an owner or admin adds it in the Touchque dashboard), being turned off (reads work for 14 days, changes are refused) or switched off on this Touchque deployment.
 
 ## Security
 
 - Every API request is signed HMAC-SHA256 (method, path+query, timestamp, nonce, body hash).
-- The `X-TouchQue-Token` a frontend echoes back is itself signed and bound to
+- The `X-Touchque-Token` a frontend echoes back is itself signed and bound to
   one user + action + transaction digest — it can't be replayed for a
   different amount, recipient or user.
 - An approval is consumed exactly once, server-side.
 - Your API secret never leaves your server.
 
-See [SECURITY.md](./SECURITY.md) to report a vulnerability.
+See [SECURITY.md](https://github.com/Touchque/touchque-nodejs/blob/main/SECURITY.md) to report a vulnerability.
 
 ## Requirements
 
 - Node.js 18+
-- A [TouchQue Dashboard](https://dashboard.touchque.com) account
+- A [Touchque Dashboard](https://dashboard.touchque.com) account
 
 ## Logging
 
-The SDK writes nothing to the console on its own. To see its own problems (a misconfigured guard, a failed `onChallenge`, a relay mounted without `getLoginUser`), pass a logger: `new TouchQue({ logger: console })`, or pino or winston (anything with `warn` and `error`); `debug: true` uses `console`. Lines carry an error's class, code and message, never a request or a user.
+The SDK writes nothing to the console on its own. To see its own problems (a misconfigured guard, a failed `onChallenge`, a relay mounted without `getLoginUser`), pass a logger: `new Touchque({ logger: console })`, or pino or winston (anything with `warn` and `error`); `debug: true` uses `console`. Lines carry an error's class, code and message, never a request or a user.
 
 ## License
 
-MIT © [TouchQue](https://touchque.com)
+MIT © [Touchque](https://touchque.com)
 
-## TouchQue Login (hosted sign-in)
+## Touchque Login (hosted sign-in)
 
-Sign-up and sign-in pages for your own customers, on your brand, with OpenID Connect. See [Touchque Login](https://support.touchque.com/touchque-login) for this SDK's client and a quickstart.
+Sign-up and sign-in pages for your own customers, on your brand, with OpenID Connect. See [support.touchque.com/touchque-login](https://support.touchque.com/touchque-login) for this SDK's client and a quickstart.

@@ -22,7 +22,7 @@ describe('SecurityEventVerifier (vectors)', () => {
       expect(err.code).toBe(v.error);
     });
   }
-  test('the short names TouchQue sends', () => {
+  test('the short names Touchque sends', () => {
     expect(SECURITY_EVENT_TYPES['session-revoked']).toBe('https://schemas.openid.net/secevent/caep/event-type/session-revoked');
   });
 });

@@ -1,11 +1,11 @@
 // A small in-memory fixed-window rate limiter for touchqueRouter's pre-auth
-// routes. It protects the partner's own server (and their TouchQue quota) from
+// routes. It protects the partner's own server (and their Touchque quota) from
 // scripted abuse of routes anyone on the internet can call. It is per process:
 // behind several instances, each keeps its own counters, which still caps abuse
 // per instance. Use your own shared limiter in front of the router if you need
 // one global budget, and set `rateLimit: false` here.
 //
-// Exported for your own routes too (withTouchQue, a hand-written relay): the
+// Exported for your own routes too (withTouchque, a hand-written relay): the
 // same limiter touchqueRouter and touchqueRelay use.
 //
 //   const limiter = new FixedWindowLimiter();            // 20 per IP, 5 per user, per minute

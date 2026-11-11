@@ -1,5 +1,5 @@
 // src/hostedLogin.ts
-// TouchQue Login (hosted sign-in) for your app: an OpenID Connect client for
+// Touchque Login (hosted sign-in) for your app: an OpenID Connect client for
 // your tenant (acme.login.touchque.com or your own domain).
 //
 //   const login = new HostedLogin({ domain: 'acme.login.touchque.com', clientId, clientSecret, redirectUri });
@@ -15,14 +15,14 @@
 // list the grant, and an API that grants it scopes):
 //   const forAda = await login.exchangeToken(adasAccessToken, { audience: 'https://api.acme.com' });   // RFC 8693
 //   const ask = await login.askUser({ loginHint: 'ada@acme.com', scope: 'openid payments:create', audience, bindingMessage: 'Pay invoice 42' });
-//   reply(`Type ${ask.bindingCode} in the TouchQue app`);
+//   reply(`Type ${ask.bindingCode} in the Touchque app`);
 //   const approved = await login.waitForUser(ask);                                                      // CIBA, poll mode
 
 import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify as verifySig, KeyObject } from 'crypto';
-import { TouchQueError } from './errors';
+import { TouchqueError } from './errors';
 import { MyAccount, issuerOf } from './myAccount';
 
-export class HostedLoginError extends TouchQueError {
+export class HostedLoginError extends TouchqueError {
   public readonly code: string;
   public readonly description: string | undefined;
   public readonly status: number | undefined;
@@ -41,7 +41,7 @@ export interface HostedLoginConfig {
   clientId: string;
   /** Apps with a server: the client secret. SPAs and native apps leave it out. */
   clientSecret?: string;
-  /** Where TouchQue sends users back; must be registered on the app. */
+  /** Where Touchque sends users back; must be registered on the app. */
   redirectUri?: string;
   /** Default 'openid profile email'. Add 'offline_access' for a refresh token. */
   scope?: string;
@@ -149,7 +149,7 @@ export interface AskUserParams {
   audience?: string;
   /** A short text (at most 64 characters) shown on the phone, marked as the app's own. */
   bindingMessage?: string;
-  /** RFC 9396 details TouchQue draws on the phone (payment_initiation, …). */
+  /** RFC 9396 details Touchque draws on the phone (payment_initiation, …). */
   authorizationDetails?: unknown[];
   /** Seconds the user has to answer: 30 to 300 (default 300). */
   requestedExpiry?: number;
@@ -332,7 +332,7 @@ export class HostedLogin {
 
   /**
    * Token vault: the provider's own access token (Google, Microsoft, GitHub…)
-   * for the signed-in user, from a connection that stores tokens. TouchQue
+   * for the signed-in user, from a connection that stores tokens. Touchque
    * refreshes it; the refresh token never leaves. `userAccessToken` is the
    * user's token for this app (or for an app the connection lists).
    * HostedLoginError invalid_grant: the user has not signed in with the
@@ -404,7 +404,7 @@ export class HostedLogin {
   }
 
   /**
-   * For your API: checks an access token TouchQue issued (signature, issuer,
+   * For your API: checks an access token Touchque issued (signature, issuer,
    * audience, expiry, typ at+jwt) and, optionally, that it carries scopes.
    */
   async verifyAccessToken(token: string, { audience, requiredScopes = [] }: { audience: string; requiredScopes?: string[] }): Promise<AccessTokenClaims> {

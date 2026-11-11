@@ -4,7 +4,7 @@ import {
   safeTxHash, safeGovernanceHash, safeApprovalMessage, safeDisplayDigest, verifySafeApproval, withSafeApprovals, safeScheduleCall,
   type SafeTxTarget, type VerifySafeApprovalOptions,
 } from './safeGuard';
-import { TouchQueConfigError } from './errors';
+import { TouchqueConfigError } from './errors';
 
 // Shared with every server SDK, derived from the Safe Guard reference vectors: every SDK must agree on every case.
 describe('safe-guard-vectors.json', () => {
@@ -46,8 +46,8 @@ describe('safe-guard-vectors.json', () => {
 
   test('a transaction that is not one throws', () => {
     const v = vectors.vectors[0];
-    expect(() => safeTxHash({ ...v.safeTx, tx: { ...v.safeTx.tx, to: '0x1234' } } as SafeTxTarget)).toThrow(TouchQueConfigError);
-    expect(() => safeTxHash({ ...v.safeTx, tx: { ...v.safeTx.tx, operation: 2 } } as unknown as SafeTxTarget)).toThrow(TouchQueConfigError);
-    expect(() => withSafeApprovals('0x', [])).toThrow(TouchQueConfigError);
+    expect(() => safeTxHash({ ...v.safeTx, tx: { ...v.safeTx.tx, to: '0x1234' } } as SafeTxTarget)).toThrow(TouchqueConfigError);
+    expect(() => safeTxHash({ ...v.safeTx, tx: { ...v.safeTx.tx, operation: 2 } } as unknown as SafeTxTarget)).toThrow(TouchqueConfigError);
+    expect(() => withSafeApprovals('0x', [])).toThrow(TouchqueConfigError);
   });
 });

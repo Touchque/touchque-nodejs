@@ -5,7 +5,7 @@
 // (`deviceRisk.identify({ siteKey, purpose })` → `{ visitorId, requestId,
 // confidence }`) and sends you the requestId; never trust the page's copy:
 // read the identification here (`getEvent`) or check it for an account
-// (`check`). TouchQue keeps keyed hashes only, with a key of your workspace
+// (`check`). Touchque keeps keyed hashes only, with a key of your workspace
 // alone, and its risk engine decides.
 //
 // Every signal only ever asks for more: `stepUp` means an extra check on
@@ -21,14 +21,14 @@
 // tag, or with it blocked, only gets the visitor a step-up.
 
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 import { DeviceRiskCheckOptions, DeviceRiskCheckRequest, DeviceRiskCheckResult, DeviceRiskEvent, DeviceRiskEventResult, DeviceRiskSearchOptions, DeviceRiskSearchResult } from '../types';
 
 export const DEVICE_RISK_EVENTS: readonly DeviceRiskEvent[] = ['sign_in', 'sign_up', 'password_reset', 'approval'];
 /** What the page had sent: `ok`, `replayed`, or not a usable identification (`missing`, `unknown`, `expired`, `invalid`). */
 export const DEVICE_RISK_REPORTS: readonly DeviceRiskCheckResult['report'][] = ['ok', 'replayed', 'missing', 'unknown', 'expired', 'invalid'];
 
-/** The page's form field as it came: a string, or nothing (TouchQue answers `missing`). */
+/** The page's form field as it came: a string, or nothing (Touchque answers `missing`). */
 const fieldValue = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v.slice(0, 64) : null);
 /** The relayed report (`deviceRisk.collect()`, a few KB) goes whole: a cut one cannot be decoded. Touchque checks its size. */
 const reportValue = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
@@ -90,7 +90,7 @@ export class DeviceRisk {
       ? requestId
       : { ...options, requestId: requestId as string | null | undefined };
     if (o.event !== undefined && !DEVICE_RISK_EVENTS.includes(o.event)) {
-      throw new TouchQueConfigError(`deviceRisk.check() event must be one of ${DEVICE_RISK_EVENTS.join(', ')}`);
+      throw new TouchqueConfigError(`deviceRisk.check() event must be one of ${DEVICE_RISK_EVENTS.join(', ')}`);
     }
     const id = fieldValue(o.requestId);
     const report = id ? null : reportValue(o.deviceRisk);
@@ -131,7 +131,7 @@ export class DeviceRisk {
     if (typeof options.stepUp === 'boolean') params.stepUp = options.stepUp;
     if (typeof options.cursor === 'string' && options.cursor) params.cursor = options.cursor;
     if (options.limit !== undefined) {
-      if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) throw new TouchQueConfigError('deviceRisk.searchEvents() limit must be 1 to 100');
+      if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) throw new TouchqueConfigError('deviceRisk.searchEvents() limit must be 1 to 100');
       params.limit = options.limit;
     }
     const raw = await this.http.get<Partial<DeviceRiskSearchResult>>('/device-risk/events', params);
@@ -145,7 +145,7 @@ export class DeviceRisk {
 
   /** The trusted identification behind a requestId: the visitor, how sure, what the page showed, the engine's verdict. Read-only. */
   async getEvent(requestId: string): Promise<DeviceRiskEventResult> {
-    if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) throw new TouchQueConfigError('deviceRisk.getEvent() needs a requestId (dre_…)');
+    if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) throw new TouchqueConfigError('deviceRisk.getEvent() needs a requestId (dre_…)');
     return this.http.get<DeviceRiskEventResult>(`/device-risk/events/${encodeURIComponent(requestId)}`);
   }
 }

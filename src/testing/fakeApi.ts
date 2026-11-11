@@ -1,12 +1,12 @@
 // src/testing/fakeApi.ts (tests only — not exported from the package)
-// A small in-memory TouchQue API with the same contract as the real one for the
+// A small in-memory Touchque API with the same contract as the real one for the
 // endpoints the step-up flow uses. Tests drive the "phone" with approve()/reject().
 
 import express from 'express';
 import * as crypto from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { TouchQue } from '../index';
+import { Touchque } from '../index';
 import type { DevicePosture } from '../types';
 
 /** A healthy phone posture, like the real API's `device` on a user with a linked phone. */
@@ -33,7 +33,7 @@ export interface FakeBrowser {
 }
 
 export interface FakeApi {
-  client: TouchQue;
+  client: Touchque;
   /** The fake's address, for a client with other options. */
   url: string;
   requests: FakeRequest[];
@@ -274,7 +274,7 @@ export async function startFakeApi(): Promise<FakeApi> {
 
   const server: Server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const { port } = server.address() as AddressInfo;
-  const client = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: `http://127.0.0.1:${port}` });
+  const client = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: `http://127.0.0.1:${port}` });
   const pick = (id?: string) => (id ? api.requests.find((r) => r.id === id) : api.requests[api.requests.length - 1])!;
 
   return Object.assign(api, {

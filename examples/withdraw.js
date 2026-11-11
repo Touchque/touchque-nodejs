@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
-// TouchQue Node.js SDK — real-world usage examples
+// Touchque Node.js SDK — real-world usage examples
 // ═══════════════════════════════════════════════════════════════════
 //
-// Shows how a company integrating the TouchQue SDK into its own system
+// Shows how a company integrating the Touchque SDK into its own system
 // (e.g. a crypto exchange) would use it.
 //
 // To run:
@@ -10,12 +10,12 @@
 //   2. Run this file:     node examples/withdraw.js
 // ═══════════════════════════════════════════════════════════════════
 
-const { TouchQue, TouchQueRejectedError, TouchQueTimeoutError } = require('../dist/index.js');
+const { Touchque, TouchqueRejectedError, TouchqueTimeoutError } = require('../dist/index.js');
 
 // ─── Initialize the SDK client ──────────────────────────────────
-// The partner enters the API credentials from the TouchQue Dashboard.
+// The partner enters the API credentials from the Touchque Dashboard.
 // All HMAC signing, nonce and timestamp handling is done by the SDK.
-const tq = new TouchQue({
+const tq = new Touchque({
   apiKey: 'tq_auth_abc123',        // API key from the Dashboard
   apiSecret: 'YOUR_API_SECRET',    // API secret from the Dashboard
   baseUrl: 'http://localhost:3000', // local testing (prod: https://api.touchque.com)
@@ -59,12 +59,12 @@ async function handleWithdraw(userId, amount, currency) {
     return { success: true, message: 'Withdraw succeeded' };
 
   } catch (error) {
-    if (error instanceof TouchQueRejectedError) {
+    if (error instanceof TouchqueRejectedError) {
       console.log('User rejected the request. Withdraw cancelled.');
       return { success: false, message: 'User rejected' };
     }
 
-    if (error instanceof TouchQueTimeoutError) {
+    if (error instanceof TouchqueTimeoutError) {
       console.log('User did not respond in time. Withdraw cancelled.');
       return { success: false, message: 'Timed out' };
     }
@@ -92,11 +92,11 @@ async function handleLogin(userId) {
     return { success: true };
 
   } catch (error) {
-    if (error instanceof TouchQueRejectedError) {
+    if (error instanceof TouchqueRejectedError) {
       console.log('Login rejected.');
       return { success: false, reason: 'rejected' };
     }
-    if (error instanceof TouchQueTimeoutError) {
+    if (error instanceof TouchqueTimeoutError) {
       console.log('Login timed out.');
       return { success: false, reason: 'timeout' };
     }
@@ -156,8 +156,8 @@ async function handleTransferAdvanced(userId, targetAccount, amount) {
 // SCENARIO 4: Webhook verification
 // ═══════════════════════════════════════════════════════════════════
 //
-// TouchQue also reports outcomes to the partner via webhooks. Always
-// verify that a webhook actually came from TouchQue.
+// Touchque also reports outcomes to the partner via webhooks. Always
+// verify that a webhook actually came from Touchque.
 
 function handleWebhook(rawBody, signatureHeader) {
   try {
@@ -194,7 +194,7 @@ function handleWebhook(rawBody, signatureHeader) {
 // handleTransferAdvanced('user@company.com', 'ACC-123456', '5000');
 
 console.log('─────────────────────────────────────────');
-console.log(' TouchQue Node.js SDK');
+console.log(' Touchque Node.js SDK');
 console.log(' Enable a function call above to run an example.');
 console.log('─────────────────────────────────────────');
 

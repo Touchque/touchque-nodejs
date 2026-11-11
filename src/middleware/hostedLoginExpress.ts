@@ -1,5 +1,5 @@
 // src/middleware/hostedLoginExpress.ts
-// TouchQue Login in an Express app, two lines:
+// Touchque Login in an Express app, two lines:
 //
 //   const login = new HostedLogin({ domain, clientId, clientSecret, redirectUri: 'https://app.acme.com/callback' });
 //   app.use(hostedLoginRoutes({ login, secret: process.env.SESSION_SECRET }));   // /login, /callback, /logout

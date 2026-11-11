@@ -3,7 +3,7 @@
 // Tokens (SETs, RFC 8417) an identity provider sends when something happens
 // to a person's account after sign-in: CAEP session-revoked,
 // credential-change, device-compliance-change; RISC account-disabled,
-// credential-compromise. TouchQue SSO sends them for an organization's
+// credential-compromise. Touchque SSO sends them for an organization's
 // members to the receivers its admin adds (Organization > Continuous access).
 // Your app ends the person's sessions or asks them to sign in again.
 //
@@ -25,13 +25,13 @@
 // ones you handled and skip a repeat.
 
 import * as crypto from 'crypto';
-import { TouchQueConfigError } from './errors';
+import { TouchqueConfigError } from './errors';
 import { b64urlJson, getJson, keyOf, safeUrl, verifyJws, type Jwk } from './jwsKeys';
 
 const SET_TYP = 'secevent+jwt';
 const NAMESPACE = /^https:\/\/schemas\.openid\.net\/secevent\/(caep|risc|ssf)\/event-type\/([a-z0-9-]+)$/;
 
-/** The event types TouchQue sends, by their short name. */
+/** The event types Touchque sends, by their short name. */
 export const SECURITY_EVENT_TYPES = {
   'session-revoked': 'https://schemas.openid.net/secevent/caep/event-type/session-revoked',
   'credential-change': 'https://schemas.openid.net/secevent/caep/event-type/credential-change',
@@ -60,7 +60,7 @@ export interface SecurityEvent {
   audience: string[];
   /** Seconds since the epoch. */
   issuedAt: number;
-  /** TouchQue puts the case code of its decision here ("Why?" in the dashboard). */
+  /** Touchque puts the case code of its decision here ("Why?" in the dashboard). */
   txn: string | null;
   /** The subject as sent (sub_id): { format: 'email', email } for a person, { format: 'opaque', id } for the stream. */
   subject: Record<string, unknown>;
@@ -96,7 +96,7 @@ export class SecurityEventVerifier {
   private readonly pinned: boolean;
 
   constructor(options: SecurityEventVerifierOptions) {
-    if (!options?.issuer || !options?.audience) throw new TouchQueConfigError('SecurityEventVerifier needs issuer (the transmitter) and audience (your stream\'s aud)');
+    if (!options?.issuer || !options?.audience) throw new TouchqueConfigError('SecurityEventVerifier needs issuer (the transmitter) and audience (your stream\'s aud)');
     this.issuer = options.issuer;
     this.audience = options.audience;
     this.jwksUri = options.jwksUri;
@@ -187,8 +187,8 @@ export interface PollSecurityEventsOptions {
 /** One poll (RFC 8936): acknowledges what you handled and returns the waiting SETs { jti: token }. */
 export async function pollSecurityEvents(o: PollSecurityEventsOptions): Promise<{ sets: Record<string, string>; moreAvailable: boolean }> {
   const u = safeUrl(o.url);
-  if (!u) throw new TouchQueConfigError(`${o.url} must be an https URL`);
-  if (!o.token) throw new TouchQueConfigError('pollSecurityEvents needs the stream\'s token');
+  if (!u) throw new TouchqueConfigError(`${o.url} must be an https URL`);
+  if (!o.token) throw new TouchqueConfigError('pollSecurityEvents needs the stream\'s token');
   const res = await fetch(u, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${o.token}` },

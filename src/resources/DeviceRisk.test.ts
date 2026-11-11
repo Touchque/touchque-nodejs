@@ -2,7 +2,7 @@ import { describe, test, expect, vi } from 'vitest';
 import { DeviceRisk, parseDeviceRiskCheck } from './DeviceRisk';
 import { Risk } from './Risk';
 import { Login } from './Login';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 import type { HttpClient } from '../core/HttpClient';
 
 const RID = `dre_${'a'.repeat(22)}`;
@@ -37,7 +37,7 @@ describe('DeviceRisk resource', () => {
     (http.get as any).mockResolvedValue({ requestId: RID, visitorId: 'tqv_x' });
     expect((await new DeviceRisk(http).getEvent(RID)).visitorId).toBe('tqv_x');
     expect(http.get).toHaveBeenCalledWith(`/device-risk/events/${RID}`);
-    await expect(new DeviceRisk(http).getEvent('../users')).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(new DeviceRisk(http).getEvent('../users')).rejects.toBeInstanceOf(TouchqueConfigError);
   });
 
   test('searchEvents() sends the filters it was given and hands back the opaque cursor', async () => {
@@ -49,7 +49,7 @@ describe('DeviceRisk resource', () => {
     (http.get as any).mockResolvedValue({ events: [], nextCursor: null });
     expect((await new DeviceRisk(http).searchEvents()).nextCursor).toBeNull();
     expect(http.get).toHaveBeenLastCalledWith('/device-risk/events', {});
-    await expect(new DeviceRisk(http).searchEvents({ limit: 101 })).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(new DeviceRisk(http).searchEvents({ limit: 101 })).rejects.toBeInstanceOf(TouchqueConfigError);
   });
 
   test('one line with the form field: missing, empty or made up is sent as it is and answered, never thrown', async () => {
@@ -76,8 +76,8 @@ describe('DeviceRisk resource', () => {
 
   test('a wrong event is a clear error before any request (a bug in your code, not the page)', async () => {
     const http = fakeHttp();
-    await expect(new DeviceRisk(http).check({ deviceRisk: 'r', event: 'tracking' as never })).rejects.toBeInstanceOf(TouchQueConfigError);
-    await expect(new DeviceRisk(http).check(RID, { event: 'tracking' as never })).rejects.toBeInstanceOf(TouchQueConfigError);
+    await expect(new DeviceRisk(http).check({ deviceRisk: 'r', event: 'tracking' as never })).rejects.toBeInstanceOf(TouchqueConfigError);
+    await expect(new DeviceRisk(http).check(RID, { event: 'tracking' as never })).rejects.toBeInstanceOf(TouchqueConfigError);
     expect(http.post).not.toHaveBeenCalled();
   });
 

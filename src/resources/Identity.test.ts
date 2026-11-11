@@ -1,12 +1,12 @@
-// tq.identity (TouchQue Login Management API): each call sends the method,
+// tq.identity (Touchque Login Management API): each call sends the method,
 // path and body the API expects, signed like every partner call.
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { TouchQue } from '../index';
+import { Touchque } from '../index';
 
 const seen: Array<{ method: string; url: string; body: unknown; signed: boolean }> = [];
 let server: Server;
-let tq: TouchQue;
+let tq: Touchque;
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -22,7 +22,7 @@ beforeAll(async () => {
   });
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
   const port = (server.address() as { port: number }).port;
-  tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: `http://127.0.0.1:${port}` });
+  tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: `http://127.0.0.1:${port}` });
 });
 afterAll(() => { server.close(); });
 

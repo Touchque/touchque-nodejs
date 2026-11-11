@@ -1,7 +1,7 @@
 // src/safeGuard.ts
-// Safe Guard approvals, checked without trusting TouchQue. The approver's phone decodes the raw
+// Safe Guard approvals, checked without trusting Touchque. The approver's phone decodes the raw
 // Safe transaction itself and signs, with a P-256 key only its biometrics unlock, a 105-byte
-// approval that TouchQueSafeGuard checks on chain:
+// approval that TouchqueSafeGuard checks on chain:
 //   index (1) | expiresAt (8) | displayDigest (32) | r (32) | s (32)
 // over the SHA-256 of the 149-byte message
 //   "TQG1" | purpose (1) | chainId (32) | guard (20) | Safe (20) | subject (32) | expiresAt (8) | displayDigest (32)
@@ -13,7 +13,7 @@
 // Safe nonce and gas) never passes as one to execute.
 
 import { createHash, createPublicKey, verify as verifySignature, type KeyObject } from 'crypto';
-import { TouchQueConfigError } from './errors';
+import { TouchqueConfigError } from './errors';
 
 /** A Safe transaction: the fields the owners sign (Safe v1.3+ EIP-712 `SafeTx`). */
 export interface SafeTxCall {
@@ -36,7 +36,7 @@ export interface SafeTxTarget {
   chainId: string | number | bigint;
   /** The Safe's address. */
   safe: string;
-  /** The TouchQueSafeGuard installed on it. */
+  /** The TouchqueSafeGuard installed on it. */
   guard: string;
   tx: SafeTxCall;
 }
@@ -182,6 +182,7 @@ const DOMAIN_TYPEHASH = typeHash('EIP712Domain(uint256 chainId,address verifying
 const SAFE_TX_TYPEHASH = typeHash(
   'SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)',
 );
+// The type name keeps its original capital Q: the guard contract and the phone hash this exact string.
 const GOVERNANCE_TYPEHASH = typeHash('TouchQueGovernance(uint256 chainId,address safe,address to,uint256 value,bytes32 dataHash,uint8 operation)');
 const SCHEDULE_SELECTOR = typeHash('schedule(address,bytes32,bytes)').subarray(0, 4);
 
@@ -191,18 +192,18 @@ function uint(value: unknown, field: string, max = MAX_UINT256): bigint {
   if (typeof value === 'bigint') v = value;
   else if (typeof value === 'number' && Number.isSafeInteger(value)) v = BigInt(value);
   else if (typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value)) v = BigInt(value);
-  if (v === null || v < 0n || v > max) throw new TouchQueConfigError(`safeGuard: ${field} must be a non-negative integer (a decimal string for large values).`);
+  if (v === null || v < 0n || v > max) throw new TouchqueConfigError(`safeGuard: ${field} must be a non-negative integer (a decimal string for large values).`);
   return v;
 }
 
 function address(value: unknown, field: string): Buffer {
-  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(value)) throw new TouchQueConfigError(`safeGuard: ${field} must be an address (0x and 40 hex characters).`);
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(value)) throw new TouchqueConfigError(`safeGuard: ${field} must be an address (0x and 40 hex characters).`);
   return Buffer.from(value.slice(2), 'hex');
 }
 
 function hexBytes(value: unknown, field: string, size?: number): Buffer {
   if (typeof value !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(value) || (size !== undefined && value.length !== 2 + 2 * size)) {
-    throw new TouchQueConfigError(`safeGuard: ${field} must be 0x-prefixed hex${size !== undefined ? ` of ${size} bytes` : ''}.`);
+    throw new TouchqueConfigError(`safeGuard: ${field} must be 0x-prefixed hex${size !== undefined ? ` of ${size} bytes` : ''}.`);
   }
   return Buffer.from(value.slice(2), 'hex');
 }
@@ -216,11 +217,11 @@ const hex = (b: Buffer) => `0x${b.toString('hex')}`;
 
 function parseTarget(target: SafeTxTarget) {
   if (!target || typeof target !== 'object' || !target.tx || typeof target.tx !== 'object') {
-    throw new TouchQueConfigError('safeGuard: pass { chainId, safe, guard, tx: { to, value, data, operation, …, nonce } }.');
+    throw new TouchqueConfigError('safeGuard: pass { chainId, safe, guard, tx: { to, value, data, operation, …, nonce } }.');
   }
   const { tx } = target;
   const operation = tx.operation ?? 0;
-  if (operation !== 0 && operation !== 1) throw new TouchQueConfigError('safeGuard: tx.operation must be 0 (call) or 1 (delegatecall).');
+  if (operation !== 0 && operation !== 1) throw new TouchqueConfigError('safeGuard: tx.operation must be 0 (call) or 1 (delegatecall).');
   return {
     chainId: uint(target.chainId, 'chainId', (1n << 64n) - 1n),
     safe: address(target.safe, 'safe'),
@@ -268,7 +269,7 @@ export function safeApprovalMessage(fields: {
   displayDigest: string;
 }): string {
   const purpose = PURPOSES[fields.purpose];
-  if (!purpose) throw new TouchQueConfigError("safeGuard: purpose is 'approve' or 'schedule'.");
+  if (!purpose) throw new TouchqueConfigError("safeGuard: purpose is 'approve' or 'schedule'.");
   const expires = Buffer.alloc(8);
   expires.writeBigUInt64BE(uint(fields.expiresAt, 'expiresAt', (1n << 64n) - 1n));
   return hex(Buffer.concat([
@@ -303,7 +304,7 @@ function seconds(now: Date | number | undefined): bigint {
 }
 
 /**
- * Checks a phone's Safe Guard approval the way TouchQueSafeGuard does, without trusting the server
+ * Checks a phone's Safe Guard approval the way TouchqueSafeGuard does, without trusting the server
  * that relayed it: the Safe and governance hashes come from `target`, the key from the guard's
  * approver list on chain (`x || y`, 128 hex characters, or `{ x, y }`). It checks one purpose:
  * `approve` unless you pass `purpose: 'schedule'` for a governance change.
@@ -354,7 +355,7 @@ export function verifySafeApproval(
 
 function approvalBytes(approvals: string[]): Buffer[] {
   if (!Array.isArray(approvals) || approvals.length === 0 || approvals.length > 255) {
-    throw new TouchQueConfigError('safeGuard: pass 1 to 255 approvals.');
+    throw new TouchqueConfigError('safeGuard: pass 1 to 255 approvals.');
   }
   return approvals
     .map((a, i) => hexBytes(typeof a === 'string' && !a.startsWith('0x') ? `0x${a}` : a, `approvals[${i}]`, 105))

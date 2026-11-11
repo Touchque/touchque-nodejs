@@ -1,9 +1,9 @@
 // touchqueRelay: touchqueRouter's routes and checks as a Fetch handler,
-// driven with Request objects against the fake TouchQue API.
+// driven with Request objects against the fake Touchque API.
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { startFakeApi, FakeApi } from './testing/fakeApi';
-import { touchqueRelay, TouchQueRelayOptions } from './index';
-import type { TouchQue } from './index';
+import { touchqueRelay, TouchqueRelayOptions } from './index';
+import type { Touchque } from './index';
 
 type Relay = (req: Request) => Promise<Response>;
 
@@ -15,11 +15,11 @@ const call = (relay: Relay, method: string, path: string, body?: unknown, header
   }));
 const post = (relay: Relay, path: string, body: unknown = {}, headers: Record<string, string> = {}) => call(relay, 'POST', path, body, headers);
 
-const relayFor = (tq: TouchQue, options: Partial<TouchQueRelayOptions> = {}) =>
+const relayFor = (tq: Touchque, options: Partial<TouchqueRelayOptions> = {}) =>
   touchqueRelay(tq, { getUserId: () => 'user@example.com', ...options });
 
 /** A client whose passkey calls are mocks (the fake API has no primary passkey routes). */
-function passkeyTq(webauthn: Record<string, unknown> = {}): TouchQue {
+function passkeyTq(webauthn: Record<string, unknown> = {}): Touchque {
   return {
     webauthn: {
       primaryOptions: vi.fn(async () => ({ attemptId: 'att_1', options: {} })),
@@ -30,7 +30,7 @@ function passkeyTq(webauthn: Record<string, unknown> = {}): TouchQue {
       deleteCredential: vi.fn(async () => ({ deleted: true })),
       ...webauthn,
     },
-  } as unknown as TouchQue;
+  } as unknown as Touchque;
 }
 
 let api: FakeApi;
@@ -107,13 +107,13 @@ describe('touchqueRelay — classic login (two-phase)', () => {
     expect(onAuthenticated).not.toHaveBeenCalled();
 
     api.approve();
-    const done = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-TouchQue-Token': step.token });
+    const done = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-Touchque-Token': step.token });
     expect(done.status).toBe(200);
     expect(await done.json()).toMatchObject({ status: 'success', requestId: step.touchque.requestId, assurance: { method: 'push' } });
     expect(done.headers.get('set-cookie')).toBe('sid=user@example.com; HttpOnly');
     expect(onAuthenticated.mock.calls[0][1]).toMatchObject({ externalUsername: 'user@example.com', via: 'login' });
 
-    const replay = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-TouchQue-Token': step.token });
+    const replay = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-Touchque-Token': step.token });
     expect(replay.status).not.toBe(200);
     expect(onAuthenticated).toHaveBeenCalledTimes(1);
   });
@@ -122,7 +122,7 @@ describe('touchqueRelay — classic login (two-phase)', () => {
     const relay = relayFor(api.client, { rateLimit: false });
     const first = await (await post(relay, '/login', { externalUsername: 'user@example.com' })).json();
     api.reject();
-    const rej = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-TouchQue-Token': first.token });
+    const rej = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-Touchque-Token': first.token });
     expect(rej.status).toBe(403);
     expect((await rej.json()).touchque.state).toBe('rejected');
     const fresh = await (await post(relay, '/login', { externalUsername: 'new@example.com' })).json();
@@ -154,7 +154,7 @@ describe('touchqueRelay — classic login (two-phase)', () => {
 });
 
 describe('touchqueRelay — offline sign', () => {
-  test('without getLoginUser the offline routes are off (403), TouchQue never called', async () => {
+  test('without getLoginUser the offline routes are off (403), Touchque never called', async () => {
     const relay = relayFor(api.client, { rateLimit: false });
     for (const [path, body] of [['/offline/challenge', { externalUsername: 'victim@example.com' }], ['/offline/verify', { challengeId: 'c1', code: 'ABCD123' }], ['/offline/totp', { externalUsername: 'victim@example.com', code: '123456' }]] as const) {
       const res = await post(relay, path, body);
@@ -210,7 +210,7 @@ describe('touchqueRelay — rate limits (the same FixedWindowLimiter)', () => {
   });
 
   test('one IP spraying many usernames is capped per IP; with no client address only the per-user limits apply', async () => {
-    const spray = async (options: Partial<TouchQueRelayOptions>) => {
+    const spray = async (options: Partial<TouchqueRelayOptions>) => {
       const relay = relayFor(api.client, { allowOfflineWithoutFirstFactor: true, rateLimit: { perIp: 4, perUser: 100 }, ...options });
       const statuses: number[] = [];
       for (let i = 0; i < 6; i++) statuses.push((await post(relay, '/offline/challenge', { externalUsername: `u${i}@example.com` })).status);
@@ -225,7 +225,7 @@ describe('touchqueRelay — rate limits (the same FixedWindowLimiter)', () => {
     const first = await (await post(relay, '/login', { externalUsername: 'user@example.com' })).json();
     for (let i = 0; i < 12; i++) {
       if (i === 9) api.approve();
-      const poll = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-TouchQue-Token': first.token });
+      const poll = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-Touchque-Token': first.token });
       if (i < 9) expect(poll.status).toBe(202);
       else { expect(poll.status).toBe(200); break; }
     }
@@ -252,7 +252,7 @@ describe('touchqueRelay — passkeys', () => {
     expect(onAuthenticated.mock.calls[0][1]).toEqual({ externalUsername: 'user@example.com', requestId: 'req_2', via: 'passkey' });
   });
 
-  test('approving a pending request opens a session only for the user TouchQue approved', async () => {
+  test('approving a pending request opens a session only for the user Touchque approved', async () => {
     const onAuthenticated = vi.fn();
     const tq = passkeyTq({ authenticateVerify: vi.fn(async () => ({ success: true, message: 'ok', externalUsername: 'other@example.com', requestId: 'r' })) });
     const bound = relayFor(tq, { getLoginUser: () => 'alice@example.com', onAuthenticated });
@@ -270,9 +270,9 @@ describe('touchqueRelay — passkeys', () => {
     expect(step.touchque).toMatchObject({ state: 'waiting', number: '47' });
     expect(api.calls.find((c) => c.path === '/login/request')?.body.type).toBe('PASSKEY_ENROLL');
     api.approve();
-    const done = await post(relay, '/passkey/register/options', {}, { 'X-TouchQue-Token': step.token });
+    const done = await post(relay, '/passkey/register/options', {}, { 'X-Touchque-Token': step.token });
     expect((await done.json()).challenge).toBe('reg-challenge');
-    expect((await post(relay, '/passkey/register/options', {}, { 'X-TouchQue-Token': step.token })).status).not.toBe(200);
+    expect((await post(relay, '/passkey/register/options', {}, { 'X-Touchque-Token': step.token })).status).not.toBe(200);
   });
 
   test('credentials: 401 without a user; DELETE passes the decoded id', async () => {

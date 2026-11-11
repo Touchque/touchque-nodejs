@@ -1,5 +1,5 @@
 // src/resources/Risk.ts
-// Silent sign-ins: ask TouchQue's risk engine whether a sign-in needs the
+// Silent sign-ins: ask Touchque's risk engine whether a sign-in needs the
 // phone at all, and manage the browsers it knows for a user.
 //
 // A browser becomes known when the user approves a request on the phone (or
@@ -9,7 +9,7 @@
 // sign-in is new. Nothing is sent to the phone by `risk.check`.
 
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 import {
   ForgetBrowsersOptions,
   ForgetBrowsersResponse,
@@ -61,7 +61,7 @@ export class Risk {
    * await tq.login.request({ externalUsername: user, type: 'LOGIN', browserProof });
    */
   async check(options: RiskCheckOptions): Promise<RiskCheckResult> {
-    if (!options?.externalUsername) throw new TouchQueConfigError('risk.check() needs the user (externalUsername)');
+    if (!options?.externalUsername) throw new TouchqueConfigError('risk.check() needs the user (externalUsername)');
     const raw = await this.http.post<unknown>('/risk/check', {
       externalUsername: options.externalUsername,
       ...(options.type && { type: options.type }),
@@ -77,9 +77,9 @@ export class Risk {
     return parseRiskCheck(raw);
   }
 
-  /** The browsers TouchQue knows for a user (for an "approved browsers" list in your settings page). */
+  /** The browsers Touchque knows for a user (for an "approved browsers" list in your settings page). */
   async browsers(options: RiskBrowsersOptions): Promise<RiskBrowsersResponse> {
-    if (!options?.externalUsername) throw new TouchQueConfigError('risk.browsers() needs the user (externalUsername)');
+    if (!options?.externalUsername) throw new TouchqueConfigError('risk.browsers() needs the user (externalUsername)');
     const res = await this.http.get<RiskBrowsersResponse>('/risk/browsers', { externalUsername: options.externalUsername });
     return { browsers: Array.isArray(res?.browsers) ? res.browsers : [] };
   }
@@ -90,7 +90,7 @@ export class Risk {
    * user signs out everywhere.
    */
   async forgetBrowsers(options: ForgetBrowsersOptions): Promise<ForgetBrowsersResponse> {
-    if (!options?.externalUsername) throw new TouchQueConfigError('risk.forgetBrowsers() needs the user (externalUsername)');
+    if (!options?.externalUsername) throw new TouchqueConfigError('risk.forgetBrowsers() needs the user (externalUsername)');
     return this.http.post<ForgetBrowsersResponse>('/risk/browsers/forget', {
       externalUsername: options.externalUsername,
       ...(options.thumbprint && { thumbprint: options.thumbprint }),

@@ -4,14 +4,14 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
 import vectors from '../../fixtures/safe-guard-vectors.json';
-import { TouchQue, TouchQueRejectedError, verifySafeApproval, type SafeGuardTx } from '../index';
+import { Touchque, TouchqueRejectedError, verifySafeApproval, type SafeGuardTx } from '../index';
 
 const bybit = vectors.vectors.find((v) => v.name === 'bybit_pattern')!;
 
 describe('Safe Guard against the fake API', () => {
   let fake: ChildProcess;
   let base = '';
-  let tq: TouchQue;
+  let tq: Touchque;
   const control = (p: string, body: object) => fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
   beforeAll(async () => {
     fake = spawn(process.execPath, [resolve(__dirname, '../../testing/fake-touchque-api.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -20,7 +20,7 @@ describe('Safe Guard against the fake API', () => {
       fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
     });
     base = `http://127.0.0.1:${port}`;
-    tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+    tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
     await control('/__test/link', { user: 'treasurer@acme.com' });
   });
   afterAll(() => { fake?.kill(); });
@@ -47,7 +47,7 @@ describe('Safe Guard against the fake API', () => {
   test('a refusal on the phone, an unknown id, a missing field', async () => {
     const req = await tq.safeGuard.request({ externalUsername: 'treasurer@acme.com', type: 'safe_payment', safeTx: bybit.safeTx as SafeGuardTx });
     await control('/__test/reject', { id: req.requestId });
-    await expect(tq.safeGuard.waitForApproval({ requestId: req.requestId, pollInterval: 10 })).rejects.toBeInstanceOf(TouchQueRejectedError);
+    await expect(tq.safeGuard.waitForApproval({ requestId: req.requestId, pollInterval: 10 })).rejects.toBeInstanceOf(TouchqueRejectedError);
     await expect(tq.safeGuard.status('00000000-0000-4000-8000-999999999999')).rejects.toMatchObject({ status: 404, code: 'not_found' });
     await expect(tq.safeGuard.request({ externalUsername: 'nobody@acme.com', type: 'safe_payment', safeTx: bybit.safeTx as SafeGuardTx })).rejects.toMatchObject({ code: 'device_not_linked' });
     await expect(tq.safeGuard.request({ externalUsername: 'treasurer@acme.com', type: '', safeTx: bybit.safeTx as SafeGuardTx })).rejects.toThrow(/type/);

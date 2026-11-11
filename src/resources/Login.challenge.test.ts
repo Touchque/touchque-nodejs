@@ -5,12 +5,12 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
-import { TouchQue, newCodeReplyKey, openCodeReply, type VerifyChallenge } from '../index';
+import { Touchque, newCodeReplyKey, openCodeReply, type VerifyChallenge } from '../index';
 
 const USER = 'jane@acme.com';
 let fake: ChildProcess;
 let base = '';
-let tq: TouchQue;
+let tq: Touchque;
 
 const control = (path: string, body: Record<string, unknown> = {}) =>
   fetch(`${base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -22,7 +22,7 @@ beforeAll(async () => {
     fake.stdout!.once('data', (chunk) => res(JSON.parse(String(chunk).split('\n')[0]).port));
   });
   base = `http://127.0.0.1:${port}`;
-  tq = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
+  tq = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base });
 });
 afterAll(() => { fake?.kill(); });
 beforeEach(async () => {
@@ -50,13 +50,13 @@ describe('login.verify onChallenge', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const logger = { warn: vi.fn(), error: vi.fn() };
-      const logged = new TouchQue({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base, logger });
+      const logged = new Touchque({ apiKey: 'tq_test_key', apiSecret: 'test_secret', baseUrl: base, logger });
       const result = await logged.login.verify({
         externalUsername: USER, type: 'SEND_MONEY', timeout: 5000, pollInterval: 50,
         onChallenge: (c) => { void control('/__test/approve', { id: c.requestId }); throw new Error('screen gone'); },
       });
       expect(result).toMatchObject({ approved: true, challengeCode: '47' });
-      expect(logger.warn).toHaveBeenCalledWith('[TouchQue] onChallenge failed: Error: screen gone');
+      expect(logger.warn).toHaveBeenCalledWith('[Touchque] onChallenge failed: Error: screen gone');
 
       await tq.login.verify({
         externalUsername: USER, type: 'SEND_MONEY', timeout: 5000, pollInterval: 50,

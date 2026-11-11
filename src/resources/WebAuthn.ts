@@ -57,7 +57,7 @@ export interface WebAuthnAuthenticateVerifyRequest {
 export interface WebAuthnAuthenticateVerifyResponse {
   success: boolean;
   message: string;
-  /** The user whose login request was approved (set by TouchQue, not by the browser). */
+  /** The user whose login request was approved (set by Touchque, not by the browser). */
   externalUsername?: string;
   requestId?: string;
 }

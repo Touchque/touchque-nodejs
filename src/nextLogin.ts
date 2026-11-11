@@ -1,8 +1,8 @@
-// src/nextLogin.ts — TouchQue Login in a Next.js app (App Router).
+// src/nextLogin.ts — Touchque Login in a Next.js app (App Router).
 //
 //   // lib/touchque.ts
-//   import { createTouchQueLogin } from '@touchque/node';
-//   export const touchque = createTouchQueLogin({
+//   import { createTouchqueLogin } from '@touchque/node';
+//   export const touchque = createTouchqueLogin({
 //     domain: process.env.TOUCHQUE_LOGIN_DOMAIN!, clientId: process.env.TOUCHQUE_LOGIN_CLIENT_ID!,
 //     clientSecret: process.env.TOUCHQUE_LOGIN_CLIENT_SECRET, secret: process.env.TOUCHQUE_SESSION_SECRET!,
 //     appUrl: process.env.APP_URL!,                       // https://app.acme.com
@@ -18,7 +18,7 @@
 
 import { HostedLogin, HostedLoginConfig, IdTokenClaims, TokenSet, AuthorizationUrlOptions } from './hostedLogin';
 import { seal, unseal, cookieHeaders, parseCookies, readCookie, safeReturnTo, CookieOptions } from './hostedLoginSession';
-import { TouchQueError } from './errors';
+import { TouchqueError } from './errors';
 
 export interface NextSession {
   user: IdTokenClaims;
@@ -29,7 +29,7 @@ export interface NextSession {
   scope: string;
 }
 
-export interface TouchQueNextOptions extends Omit<HostedLoginConfig, 'redirectUri'> {
+export interface TouchqueNextOptions extends Omit<HostedLoginConfig, 'redirectUri'> {
   /** At least 32 random characters; encrypts the cookies (the middleware needs the same value). */
   secret: string;
   /** Your app's origin, like https://app.acme.com (the callback is {appUrl}{basePath}/callback). */
@@ -73,9 +73,9 @@ function json(body: unknown, status = 200, cookies: string[] = []): Response {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
-export function createTouchQueLogin(options: TouchQueNextOptions) {
-  if (!options?.appUrl) throw new TouchQueError('appUrl is required');
-  if (!options.secret || options.secret.length < 32) throw new TouchQueError('secret must be at least 32 characters');
+export function createTouchqueLogin(options: TouchqueNextOptions) {
+  if (!options?.appUrl) throw new TouchqueError('appUrl is required');
+  if (!options.secret || options.secret.length < 32) throw new TouchqueError('secret must be at least 32 characters');
   const appUrl = options.appUrl.replace(/\/+$/, '');
   const basePath = (options.basePath || '/auth').replace(/\/+$/, '');
   const cookieName = options.cookieName || 'tq_session';

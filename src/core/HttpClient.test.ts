@@ -1,22 +1,22 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { HttpClient } from './HttpClient';
-import { TouchQueAPIError, TouchQueConfigError, TouchQueNetworkError } from '../errors';
+import { TouchqueAPIError, TouchqueConfigError, TouchqueNetworkError } from '../errors';
 
 vi.mock('axios');
 
 const VALID_CONFIG = { apiKey: 'tq_auth_test123', apiSecret: 'shh' };
 
 describe('HttpClient — config validation', () => {
-  test('throws TouchQueConfigError when apiKey is missing', () => {
-    expect(() => new HttpClient({ apiSecret: 'shh' } as any)).toThrow(TouchQueConfigError);
+  test('throws TouchqueConfigError when apiKey is missing', () => {
+    expect(() => new HttpClient({ apiSecret: 'shh' } as any)).toThrow(TouchqueConfigError);
   });
 
-  test('throws TouchQueConfigError when apiSecret is missing', () => {
-    expect(() => new HttpClient({ apiKey: 'tq_auth_test123' } as any)).toThrow(TouchQueConfigError);
+  test('throws TouchqueConfigError when apiSecret is missing', () => {
+    expect(() => new HttpClient({ apiKey: 'tq_auth_test123' } as any)).toThrow(TouchqueConfigError);
   });
 
-  test('throws TouchQueConfigError when apiKey does not start with "tq_"', () => {
+  test('throws TouchqueConfigError when apiKey does not start with "tq_"', () => {
     expect(() => new HttpClient({ apiKey: 'wrong_prefix', apiSecret: 'shh' })).toThrow(
       /must start with "tq_"/,
     );
@@ -53,14 +53,14 @@ describe('HttpClient — config validation', () => {
   test('refuses a plaintext http:// baseUrl to a non-localhost host', () => {
     (axios.create as any) = vi.fn(() => ({ get: vi.fn(), post: vi.fn(), delete: vi.fn() }));
     expect(() => new HttpClient({ ...VALID_CONFIG, baseUrl: 'http://api.example.com' })).toThrow(
-      TouchQueConfigError,
+      TouchqueConfigError,
     );
     expect(() => new HttpClient({ ...VALID_CONFIG, baseUrl: 'http://10.0.0.5' })).toThrow(/https:\/\//);
   });
 
   test('throws on a non-URL baseUrl', () => {
     (axios.create as any) = vi.fn(() => ({ get: vi.fn(), post: vi.fn(), delete: vi.fn() }));
-    expect(() => new HttpClient({ ...VALID_CONFIG, baseUrl: 'not a url' })).toThrow(TouchQueConfigError);
+    expect(() => new HttpClient({ ...VALID_CONFIG, baseUrl: 'not a url' })).toThrow(TouchqueConfigError);
   });
 
   test('hardens the axios instance: no redirects, capped body size', () => {
@@ -155,7 +155,7 @@ describe('HttpClient — signed requests', () => {
 });
 
 describe('HttpClient — error handling', () => {
-  test('wraps a non-2xx axios error into TouchQueAPIError with status + message', async () => {
+  test('wraps a non-2xx axios error into TouchqueAPIError with status + message', async () => {
     const axiosError = {
       isAxiosError: true,
       response: { status: 401, data: { error: 'unauthorized', message: 'Invalid API key', code: 'AUTH_401' } },
@@ -165,14 +165,14 @@ describe('HttpClient — error handling', () => {
     (axios.isAxiosError as any) = vi.fn(() => true);
 
     const client = new HttpClient(VALID_CONFIG);
-    await expect(client.post('/auth/generate-secret', {})).rejects.toThrow(TouchQueAPIError);
+    await expect(client.post('/auth/generate-secret', {})).rejects.toThrow(TouchqueAPIError);
 
     try {
       await client.post('/auth/generate-secret', {});
     } catch (err) {
-      expect(err).toBeInstanceOf(TouchQueAPIError);
-      expect((err as TouchQueAPIError).status).toBe(401);
-      expect((err as TouchQueAPIError).code).toBe('AUTH_401');
+      expect(err).toBeInstanceOf(TouchqueAPIError);
+      expect((err as TouchqueAPIError).status).toBe(401);
+      expect((err as TouchqueAPIError).code).toBe('AUTH_401');
     }
   });
 
@@ -183,7 +183,7 @@ describe('HttpClient — error handling', () => {
     (axios.isAxiosError as any) = vi.fn(() => true);
     const client = new HttpClient(VALID_CONFIG);
     const err: any = await client.post('/offline/verify', {}).catch((e) => e);
-    expect(err).toBeInstanceOf(TouchQueAPIError);
+    expect(err).toBeInstanceOf(TouchqueAPIError);
     expect(err.data).toMatchObject({ reason: 'invalid_code', attemptsLeft: 4 });
   });
 
@@ -196,7 +196,7 @@ describe('HttpClient — error handling', () => {
     await expect(client.post('/auth/generate-secret', {})).rejects.toMatchObject({ status: 500 });
   });
 
-  test('an axios error with no response (connection refused, DNS failure, timeout) becomes TouchQueNetworkError, not a fake 500', async () => {
+  test('an axios error with no response (connection refused, DNS failure, timeout) becomes TouchqueNetworkError, not a fake 500', async () => {
     const axiosError = {
       isAxiosError: true,
       response: undefined,
@@ -208,14 +208,14 @@ describe('HttpClient — error handling', () => {
     (axios.isAxiosError as any) = vi.fn(() => true);
 
     const client = new HttpClient(VALID_CONFIG);
-    await expect(client.post('/auth/generate-secret', {})).rejects.toThrow(TouchQueNetworkError);
+    await expect(client.post('/auth/generate-secret', {})).rejects.toThrow(TouchqueNetworkError);
 
     try {
       await client.post('/auth/generate-secret', {});
     } catch (err) {
-      expect(err).toBeInstanceOf(TouchQueNetworkError);
-      expect(err).not.toBeInstanceOf(TouchQueAPIError);
-      expect((err as TouchQueNetworkError).code).toBe('ECONNREFUSED');
+      expect(err).toBeInstanceOf(TouchqueNetworkError);
+      expect(err).not.toBeInstanceOf(TouchqueAPIError);
+      expect((err as TouchqueNetworkError).code).toBe('ECONNREFUSED');
     }
   });
 });

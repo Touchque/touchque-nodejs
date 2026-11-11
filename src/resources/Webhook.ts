@@ -1,8 +1,8 @@
 // src/resources/Webhook.ts
-// Webhook signature verification — ensures incoming webhooks are from TouchQue.
+// Webhook signature verification — ensures incoming webhooks are from Touchque.
 
 import * as crypto from 'crypto';
-import { TouchQueWebhookReplayError, TouchQueWebhookSignatureError } from '../errors';
+import { TouchqueWebhookReplayError, TouchqueWebhookSignatureError } from '../errors';
 import { VerifyWebhookOptions, WebhookPayload, WebhookReplayCache } from '../types';
 
 /**
@@ -29,7 +29,7 @@ export class MemoryWebhookReplayCache implements WebhookReplayCache {
 }
 
 /**
- * Reproduce the canonical string the TouchQue backend signs: the JSON body
+ * Reproduce the canonical string the Touchque backend signs: the JSON body
  * with the `signature` field removed and its **top-level** keys sorted
  * (matching the API server's canonical JSON stringification). Nested values
  * keep their order.
@@ -55,16 +55,16 @@ export class Webhook {
   }
 
   /**
-   * Verify that an incoming webhook request is genuinely from TouchQue and
-   * return its parsed payload. Throws `TouchQueWebhookSignatureError` if the
+   * Verify that an incoming webhook request is genuinely from Touchque and
+   * return its parsed payload. Throws `TouchqueWebhookSignatureError` if the
    * signature is invalid, the body is malformed, or the webhook is stale.
    *
    * **Always verify before processing.** Pass `replayCache` (e.g. a shared
    * `MemoryWebhookReplayCache`, or your own Redis-backed one) so a replayed
-   * delivery throws `TouchQueWebhookReplayError` instead of re-running your
+   * delivery throws `TouchqueWebhookReplayError` instead of re-running your
    * logic; without it, de-duplicate on `payload.jti` yourself.
    *
-   * @throws {TouchQueWebhookSignatureError}
+   * @throws {TouchqueWebhookSignatureError}
    *
    * @example
    * // Express.js — mount with a raw body parser on this route
@@ -78,8 +78,8 @@ export class Webhook {
    *     // ... handle event
    *     res.sendStatus(200);
    *   } catch (err) {
-   *     if (err instanceof TouchQueWebhookReplayError) return res.sendStatus(200); // already handled
-   *     res.sendStatus(403); // not from TouchQue, tampered, or stale
+   *     if (err instanceof TouchqueWebhookReplayError) return res.sendStatus(200); // already handled
+   *     res.sendStatus(403); // not from Touchque, tampered, or stale
    *   }
    * });
    */
@@ -87,7 +87,7 @@ export class Webhook {
     const { rawBody } = options;
 
     if (!rawBody || typeof rawBody !== 'string') {
-      throw new TouchQueWebhookSignatureError();
+      throw new TouchqueWebhookSignatureError();
     }
 
     let payload: Record<string, unknown>;
@@ -98,11 +98,11 @@ export class Webhook {
       }
       payload = parsed as Record<string, unknown>;
     } catch {
-      throw new TouchQueWebhookSignatureError();
+      throw new TouchqueWebhookSignatureError();
     }
 
     // Signature to check: the caller-supplied header value wins; otherwise
-    // fall back to the `signature` field TouchQue also embeds in the body.
+    // fall back to the `signature` field Touchque also embeds in the body.
     const provided =
       typeof options.signature === 'string' && options.signature
         ? options.signature
@@ -110,7 +110,7 @@ export class Webhook {
           ? (payload.signature as string)
           : '';
     if (!provided) {
-      throw new TouchQueWebhookSignatureError();
+      throw new TouchqueWebhookSignatureError();
     }
 
     const expected = crypto
@@ -124,27 +124,27 @@ export class Webhook {
       providedBuf.length !== expectedBuf.length ||
       !crypto.timingSafeEqual(providedBuf, expectedBuf)
     ) {
-      throw new TouchQueWebhookSignatureError();
+      throw new TouchqueWebhookSignatureError();
     }
 
     // Replay protection: reject a webhook whose signed timestamp is missing,
-    // unparseable or too far from now. TouchQue always sends one, so a
+    // unparseable or too far from now. Touchque always sends one, so a
     // missing timestamp is never "skip the check" — it fails closed.
     const tolerance = options.toleranceSeconds ?? 300;
     if (tolerance > 0) {
       const ts = typeof payload.timestamp === 'string' ? Date.parse(payload.timestamp) : NaN;
       if (Number.isNaN(ts) || Math.abs(Date.now() - ts) > tolerance * 1000) {
-        throw new TouchQueWebhookSignatureError();
+        throw new TouchqueWebhookSignatureError();
       }
     }
 
     if (options.replayCache) {
       const jti = payload.jti;
-      if (typeof jti !== 'string' || !jti) throw new TouchQueWebhookSignatureError();
+      if (typeof jti !== 'string' || !jti) throw new TouchqueWebhookSignatureError();
       // Remember it for twice the window, so it outlives any timestamp that
       // could still pass the freshness check.
       const ttl = Math.max(tolerance * 2, 600);
-      if (!options.replayCache.checkAndSet(jti, ttl)) throw new TouchQueWebhookReplayError(jti);
+      if (!options.replayCache.checkAndSet(jti, ttl)) throw new TouchqueWebhookReplayError(jti);
     }
 
     return payload as WebhookPayload;

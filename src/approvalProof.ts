@@ -5,7 +5,7 @@
 // and a digest of the transaction details the user was shown. The proof
 // arrives in the SUCCESS webhook (`approvalProof`) and in
 // `login.status(id).approvalProof`; verifying it here does not require
-// trusting TouchQue: it proves the enrolled phone signed exactly these
+// trusting Touchque: it proves the enrolled phone signed exactly these
 // details.
 
 import * as crypto from 'crypto';

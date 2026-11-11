@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Offline } from './Offline';
-import { TouchQueAPIError } from '../errors';
+import { TouchqueAPIError } from '../errors';
 import type { HttpClient } from '../core/HttpClient';
 
 function fakeHttp() {
@@ -68,7 +68,7 @@ describe('Offline resource', () => {
   test('verifyTotp() forwards requestId; a rejected request comes back as a not-approved result', async () => {
     const http = fakeHttp();
     const offline = new Offline(http);
-    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(410, { approved: false, reason: 'request_rejected' } as any));
+    (http.post as any).mockRejectedValueOnce(new TouchqueAPIError(410, { approved: false, reason: 'request_rejected' } as any));
     const r = await offline.verifyTotp({ externalUsername: 'a@b.com', code: 'ABCDEFG', requestId: 'req-1' });
     expect((http.post as any).mock.calls[0][1]).toMatchObject({ requestId: 'req-1' });
     expect(r).toEqual({ approved: false, reason: 'request_rejected', attemptsLeft: undefined });
@@ -85,21 +85,21 @@ describe('Offline resource', () => {
   test('verify() turns "not approved" responses into a result instead of throwing', async () => {
     const http = fakeHttp();
     const offline = new Offline(http);
-    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(401, { approved: false, reason: 'invalid_code', attemptsLeft: 3 } as any));
+    (http.post as any).mockRejectedValueOnce(new TouchqueAPIError(401, { approved: false, reason: 'invalid_code', attemptsLeft: 3 } as any));
     expect(await offline.verify({ challengeId: 'c1', code: 'AAAAAAA' })).toEqual({ approved: false, reason: 'invalid_code', attemptsLeft: 3 });
-    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(410, { approved: false, reason: 'expired' } as any));
+    (http.post as any).mockRejectedValueOnce(new TouchqueAPIError(410, { approved: false, reason: 'expired' } as any));
     expect((await offline.verify({ challengeId: 'c1', code: 'AAAAAAA' })).reason).toBe('expired');
-    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(429, { approved: false, reason: 'too_many_failures' } as any));
+    (http.post as any).mockRejectedValueOnce(new TouchqueAPIError(429, { approved: false, reason: 'too_many_failures' } as any));
     expect((await offline.verify({ challengeId: 'c1', code: 'AAAAAAA' })).approved).toBe(false);
   });
 
   test('verify() still throws for real failures (5xx, network, bad request)', async () => {
     const http = fakeHttp();
     const offline = new Offline(http);
-    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(500, { error: 'boom' }));
-    await expect(offline.verify({ challengeId: 'c1', code: 'AAAAAAA' })).rejects.toBeInstanceOf(TouchQueAPIError);
-    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(400, { error: 'challengeId is required' }));
-    await expect(offline.verify({ challengeId: '', code: 'AAAAAAA' })).rejects.toBeInstanceOf(TouchQueAPIError);
+    (http.post as any).mockRejectedValueOnce(new TouchqueAPIError(500, { error: 'boom' }));
+    await expect(offline.verify({ challengeId: 'c1', code: 'AAAAAAA' })).rejects.toBeInstanceOf(TouchqueAPIError);
+    (http.post as any).mockRejectedValueOnce(new TouchqueAPIError(400, { error: 'challengeId is required' }));
+    await expect(offline.verify({ challengeId: '', code: 'AAAAAAA' })).rejects.toBeInstanceOf(TouchqueAPIError);
     (http.post as any).mockRejectedValueOnce(new Error('ECONNREFUSED'));
     await expect(offline.verify({ challengeId: 'c1', code: 'AAAAAAA' })).rejects.toThrow('ECONNREFUSED');
   });
@@ -110,7 +110,7 @@ describe('Offline resource', () => {
     (http.post as any).mockResolvedValueOnce({ approved: true, externalUsername: 'a@b.com' });
     await offline.verifyTotp({ externalUsername: 'a@b.com', code: 'ABCDEFG', type: 'LOGIN', clientIp: '1.2.3.4' });
     expect(http.post).toHaveBeenCalledWith('/offline/totp/verify', { externalUsername: 'a@b.com', code: 'ABCDEFG', type: 'LOGIN', clientIp: '1.2.3.4' });
-    (http.post as any).mockRejectedValueOnce(new TouchQueAPIError(403, { error: 'offline_totp_not_allowed_for_critical' }));
+    (http.post as any).mockRejectedValueOnce(new TouchqueAPIError(403, { error: 'offline_totp_not_allowed_for_critical' }));
     expect(await offline.verifyTotp({ externalUsername: 'a@b.com', code: 'ABCDEFG' })).toEqual({ approved: false, reason: 'offline_totp_not_allowed_for_critical', attemptsLeft: undefined });
   });
 });

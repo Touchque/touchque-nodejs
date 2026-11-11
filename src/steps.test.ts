@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { TouchQue, withTouchQue, ipFromVercel, TouchQueConfigError, TouchQueError, runGuard, WebhookReasons, WebhookEvents } from './index';
+import { Touchque, withTouchque, ipFromVercel, TouchqueConfigError, TouchqueError, runGuard, WebhookReasons, WebhookEvents } from './index';
 import { startFakeApi, FakeApi } from './testing/fakeApi';
 
 let api: FakeApi;
@@ -13,7 +13,7 @@ describe('config', () => {
     process.env.TQ_API_SECRET = 'env_secret';
     process.env.TQ_API_URL = await baseOf(api);
     try {
-      const tq = new TouchQue();
+      const tq = new Touchque();
       const step = await tq.start('LOGIN', { user: 'jane@acme.com' });
       expect(step.state).toBe('waiting');
     } finally {
@@ -26,7 +26,7 @@ describe('config', () => {
     delete process.env.TQ_API_KEY;
     delete process.env.TQ_API_SECRET;
     try {
-      expect(() => new TouchQue()).toThrow(TouchQueConfigError);
+      expect(() => new Touchque()).toThrow(TouchqueConfigError);
     } finally {
       process.env = saved;
     }
@@ -58,7 +58,7 @@ describe('start / check / complete', () => {
     const step = await tq.start('SEND_MONEY', { user: 'jane@acme.com', details: { Amount: '250 EUR' } });
     api.approve();
     await expect(tq.complete(step.requestId!, { user: 'jane@acme.com', action: 'SEND_MONEY', details: { Amount: '9999 EUR' } }))
-      .rejects.toBeInstanceOf(TouchQueError);
+      .rejects.toBeInstanceOf(TouchqueError);
   });
 
   test('actionTypes.define sends the slug, name and critical flag; omits what was not given', async () => {
@@ -98,7 +98,7 @@ describe('Vishing Shield', () => {
     const poll = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: offline.body!.token });
     expect(poll.status).toBe(202);
     expect(poll.body!.touchque).toMatchObject({ state: 'passkey_required', requestId: first.body!.touchque.requestId });
-    // A code typed for that QR is refused by TouchQue: the step says passkey, not "blocked".
+    // A code typed for that QR is refused by Touchque: the step says passkey, not "blocked".
     const typed = await runGuard(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: offline.body!.token, code: 'ABCD123' });
     expect(typed.body!.touchque).toMatchObject({ state: 'passkey_required', requestId: first.body!.touchque.requestId });
   });
@@ -134,12 +134,12 @@ describe('Vishing Shield', () => {
   });
 });
 
-describe('withTouchQue (Next.js / Fetch API)', () => {
-  const call = (h: ReturnType<typeof withTouchQue>, headers: Record<string, string> = {}) =>
+describe('withTouchque (Next.js / Fetch API)', () => {
+  const call = (h: ReturnType<typeof withTouchque>, headers: Record<string, string> = {}) =>
     h(new Request('http://app.test/api/transfer', { method: 'POST', headers: { 'x-user': 'jane@acme.com', ...headers }, body: JSON.stringify({ amount: 5 }) }));
 
   test('202 with the step, then the handler runs once approved', async () => {
-    const h = withTouchQue('SEND_MONEY', async (_req, { touchque }) => Response.json({ ok: true, via: touchque.assurance?.method }), {
+    const h = withTouchque('SEND_MONEY', async (_req, { touchque }) => Response.json({ ok: true, via: touchque.assurance?.method }), {
       client: api.client,
       user: (req) => req.headers.get('x-user'),
       details: async (req) => ({ Amount: `${(await req.clone().json()).amount} EUR` }),
@@ -156,9 +156,9 @@ describe('withTouchQue (Next.js / Fetch API)', () => {
 
   // R1-02: behind an appending proxy the leftmost hop is whatever the client sent.
   test('never sends the client-controlled leftmost X-Forwarded-For hop', async () => {
-    const sent = async (opts: Partial<Parameters<typeof withTouchQue>[2]>) => {
+    const sent = async (opts: Partial<Parameters<typeof withTouchque>[2]>) => {
       api.calls.length = 0;
-      const h = withTouchQue('SEND_MONEY', async () => Response.json({ ok: true }), {
+      const h = withTouchque('SEND_MONEY', async () => Response.json({ ok: true }), {
         client: api.client, user: (req) => req.headers.get('x-user'), ...opts,
       });
       await call(h, { 'x-forwarded-for': '1.2.3.4, 203.0.113.9', 'x-real-ip': '198.51.100.4' });

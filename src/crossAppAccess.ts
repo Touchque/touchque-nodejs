@@ -1,12 +1,12 @@
 // src/crossAppAccess.ts
 // Cross App Access: Identity Assertion JWT Authorization Grants (ID-JAG,
 // draft-ietf-oauth-identity-assertion-authz-grant, an open standard). An
-// organization's identity provider (TouchQue SSO) decides which of its apps
+// organization's identity provider (Touchque SSO) decides which of its apps
 // may reach which other service for its members; the app trades a member's
 // ID token for an ID-JAG there, then the ID-JAG for an access token at the
 // other service's authorization server, with no consent screen per member.
 //
-// Your app, signed in with TouchQue SSO (an OpenID Connect app with a secret):
+// Your app, signed in with Touchque SSO (an OpenID Connect app with a secret):
 //   const { assertion } = await requestIdJag({ issuer: 'https://sso.touchque.com', clientId, clientSecret,
 //                                              idToken, audience: 'https://auth.files.example' });
 //   const tokens = await redeemIdJag({ tokenEndpoint: 'https://auth.files.example/token', clientId: 'acme', clientSecret, assertion });
@@ -17,7 +17,7 @@
 //   // claims.sub (the member at that identity provider), claims.email, claims.scopes, claims.resource, claims.tenant
 
 import * as crypto from 'crypto';
-import { TouchQueConfigError } from './errors';
+import { TouchqueConfigError } from './errors';
 import { ALGS, b64urlJson, getJson, keyOf, safeUrl, verifyJws, type Jwk } from './jwsKeys';
 
 export const ID_JAG_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id-jag';
@@ -81,7 +81,7 @@ export class IdJagVerifier {
   private readonly seen = new Map<string, number>();
 
   constructor(options: IdJagVerifierOptions) {
-    if (!options?.issuer || !options?.audience) throw new TouchQueConfigError('IdJagVerifier needs issuer (the identity provider) and audience (your authorization server\'s issuer)');
+    if (!options?.issuer || !options?.audience) throw new TouchqueConfigError('IdJagVerifier needs issuer (the identity provider) and audience (your authorization server\'s issuer)');
     this.issuer = options.issuer;
     this.audience = options.audience;
     this.jwksUri = options.jwksUri;
@@ -165,7 +165,7 @@ export class IdJagVerifier {
 
 async function postForm(url: string, form: Record<string, string | undefined>, basic?: { id: string; secret: string }): Promise<Record<string, unknown>> {
   const u = safeUrl(url);
-  if (!u) throw new TouchQueConfigError(`${url} must be an https URL`);
+  if (!u) throw new TouchqueConfigError(`${url} must be an https URL`);
   const body = new URLSearchParams();
   for (const [k, v] of Object.entries(form)) if (v !== undefined) body.set(k, v);
   const res = await fetch(u, {
@@ -187,7 +187,7 @@ export interface RequestIdJagOptions {
   /** The identity provider's issuer (its token endpoint is discovered), or give tokenEndpoint. */
   issuer?: string;
   tokenEndpoint?: string;
-  /** Your app at the identity provider (tqapp_… at TouchQue SSO) and its secret. */
+  /** Your app at the identity provider (tqapp_… at Touchque SSO) and its secret. */
   clientId: string;
   clientSecret: string;
   /** The member's ID token the identity provider issued to your app. */
@@ -202,9 +202,9 @@ export interface RequestIdJagOptions {
 export async function requestIdJag(o: RequestIdJagOptions): Promise<{ assertion: string; expiresIn?: number; scope?: string }> {
   let endpoint = o.tokenEndpoint;
   if (!endpoint) {
-    if (!o.issuer) throw new TouchQueConfigError('requestIdJag needs issuer or tokenEndpoint');
+    if (!o.issuer) throw new TouchqueConfigError('requestIdJag needs issuer or tokenEndpoint');
     const meta = await getJson(`${o.issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`);
-    if (meta.issuer !== o.issuer || typeof meta.token_endpoint !== 'string') throw new TouchQueConfigError('the identity provider\'s metadata does not match its issuer');
+    if (meta.issuer !== o.issuer || typeof meta.token_endpoint !== 'string') throw new TouchqueConfigError('the identity provider\'s metadata does not match its issuer');
     endpoint = meta.token_endpoint;
   }
   const data = await postForm(endpoint, {

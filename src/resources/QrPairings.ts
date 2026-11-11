@@ -1,13 +1,13 @@
 // src/resources/QrPairings.ts
 // Pairing a browser by QR code: your page shows a QR code, the person scans it
-// with the TouchQue app, and the phone that scanned is the one asked to approve.
+// with the Touchque app, and the phone that scanned is the one asked to approve.
 //
 // 1. Your page gets the thumbprint of its browser key (`@touchque/web`
 //    `browserKey.thumbprint()`) and sends it to your server.
 // 2. `create({ keyThumbprint, clientIp, userAgent })` registers a pairing and
 //    returns `uri` (touchque://pair-browser?…): show it as a QR code. It can be
 //    scanned once, for `ttlSeconds` (default 120). The nonce in it never leaves
-//    your server and the QR: TouchQue keeps only its hash.
+//    your server and the QR: Touchque keeps only its hash.
 // 3. Poll `get(pairingId)`: `scanned` once a phone holding one of your users'
 //    accounts read it (`externalUsername`, `proximity`: same network, same
 //    country), `confirmed` once the person went on, `reported` when they said
@@ -19,7 +19,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { HttpClient } from '../core/HttpClient';
-import { TouchQueConfigError } from '../errors';
+import { TouchqueConfigError } from '../errors';
 import { CreatedQrPairing, CreateQrPairingOptions, QrPairing, RefuseQrPairingOptions } from '../types';
 
 /** What `refuse` may tell the phone. */
@@ -44,11 +44,11 @@ export class QrPairings {
    */
   async create(options: CreateQrPairingOptions): Promise<CreatedQrPairing> {
     if (!B64URL_43.test(String(options?.keyThumbprint ?? ''))) {
-      throw new TouchQueConfigError('qrPairings.create() needs keyThumbprint: the RFC 7638 thumbprint of the browser key, base64url (43 characters).');
+      throw new TouchqueConfigError('qrPairings.create() needs keyThumbprint: the RFC 7638 thumbprint of the browser key, base64url (43 characters).');
     }
     const ttl = options.ttlSeconds;
     if (ttl !== undefined && (!Number.isInteger(ttl) || ttl < 30 || ttl > 300)) {
-      throw new TouchQueConfigError('qrPairings.create(): ttlSeconds must be 30 to 300.');
+      throw new TouchqueConfigError('qrPairings.create(): ttlSeconds must be 30 to 300.');
     }
     const nonce = randomBytes(32).toString('base64url');
     const created = await this.http.post<{ pairingId: string; expiresAt: string }>('/qr-pairings', {
@@ -75,10 +75,10 @@ export class QrPairings {
    */
   refuse(pairingId: string, options: RefuseQrPairingOptions): Promise<QrPairing> {
     if (!QR_PAIRING_REFUSAL_REASONS.includes(options?.reason as (typeof QR_PAIRING_REFUSAL_REASONS)[number])) {
-      throw new TouchQueConfigError(`qrPairings.refuse(): reason must be one of ${QR_PAIRING_REFUSAL_REASONS.join(', ')}.`);
+      throw new TouchqueConfigError(`qrPairings.refuse(): reason must be one of ${QR_PAIRING_REFUSAL_REASONS.join(', ')}.`);
     }
     if (typeof options.message !== 'string' || !options.message.trim()) {
-      throw new TouchQueConfigError('qrPairings.refuse() needs message: what the phone shows (up to 300 characters).');
+      throw new TouchqueConfigError('qrPairings.refuse() needs message: what the phone shows (up to 300 characters).');
     }
     return this.http.post<QrPairing>(`/qr-pairings/${encodeURIComponent(requireId(pairingId, 'refuse'))}/outcome`, {
       reason: options.reason,
@@ -90,6 +90,6 @@ export class QrPairings {
 }
 
 function requireId(pairingId: string, method: string): string {
-  if (typeof pairingId !== 'string' || !pairingId) throw new TouchQueConfigError(`qrPairings.${method}() needs the pairingId.`);
+  if (typeof pairingId !== 'string' || !pairingId) throw new TouchqueConfigError(`qrPairings.${method}() needs the pairingId.`);
   return pairingId;
 }

@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Login } from './Login';
-import { TouchQueRejectedError, TouchQueTimeoutError, TouchQuePasskeyRequiredError } from '../errors';
+import { TouchqueRejectedError, TouchqueTimeoutError, TouchquePasskeyRequiredError } from '../errors';
 import type { HttpClient } from '../core/HttpClient';
 
 function fakeHttp() {
@@ -107,21 +107,21 @@ describe('Login resource', () => {
     expect(result).toEqual({ approved: true, status: 'CONFIRMED' });
   });
 
-  test('waitForApproval() throws TouchQueRejectedError when status becomes REJECTED', async () => {
+  test('waitForApproval() throws TouchqueRejectedError when status becomes REJECTED', async () => {
     const http = fakeHttp();
     (http.get as any).mockResolvedValue({ status: 'REJECTED' });
     const login = new Login(http);
 
-    await expect(login.waitForApproval({ requestId: 'req_1', pollInterval: 1 })).rejects.toThrow(TouchQueRejectedError);
+    await expect(login.waitForApproval({ requestId: 'req_1', pollInterval: 1 })).rejects.toThrow(TouchqueRejectedError);
   });
 
-  test('waitForApproval() throws TouchQueTimeoutError when the timeout elapses with no resolution', async () => {
+  test('waitForApproval() throws TouchqueTimeoutError when the timeout elapses with no resolution', async () => {
     const http = fakeHttp();
     (http.get as any).mockResolvedValue({ status: 'PENDING' });
     const login = new Login(http);
 
     await expect(login.waitForApproval({ requestId: 'req_1', timeout: 5, pollInterval: 2 })).rejects.toThrow(
-      TouchQueTimeoutError,
+      TouchqueTimeoutError,
     );
   });
 
@@ -170,12 +170,12 @@ describe('Login resource', () => {
 });
 
 describe('Login — phishing-resistant policy', () => {
-  test('verify() throws TouchQuePasskeyRequiredError at once (no 30 s polling) when a passkey is required', async () => {
-    const { TouchQuePasskeyRequiredError } = await import('../errors');
+  test('verify() throws TouchquePasskeyRequiredError at once (no 30 s polling) when a passkey is required', async () => {
+    const { TouchquePasskeyRequiredError } = await import('../errors');
     const http = { post: vi.fn(async () => ({ requestId: 'req_p', message: 'Request sent', expiresAt: 't', requiresPasskey: true })), get: vi.fn() } as unknown as HttpClient;
     const login = new Login(http);
     const err = await login.verify({ externalUsername: 'a@b.com', type: 'WITHDRAW' }).catch((e) => e);
-    expect(err).toBeInstanceOf(TouchQuePasskeyRequiredError);
+    expect(err).toBeInstanceOf(TouchquePasskeyRequiredError);
     expect(err.requestId).toBe('req_p');
     expect((http as any).get).not.toHaveBeenCalled();
   });
@@ -187,7 +187,7 @@ describe('Login — phishing-resistant policy', () => {
       .mockResolvedValue({ status: 'PENDING', requiresPasskey: true });
     const login = new Login(http);
     const err = await login.verify({ externalUsername: 'a@b.com', type: 'LOGIN', pollInterval: 1, timeout: 5000 }).catch((e) => e);
-    expect(err).toBeInstanceOf(TouchQuePasskeyRequiredError);
+    expect(err).toBeInstanceOf(TouchquePasskeyRequiredError);
     expect(err).toMatchObject({ requestId: 'req_1', reason: 'step_up' });
     expect(http.get).toHaveBeenCalledTimes(2);
   });
