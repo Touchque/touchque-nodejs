@@ -48,8 +48,9 @@ export interface FakeApi {
   /**
    * Behaviour switches. `silent`: POST /risk/check answers prompt:false for an
    * everyday action (a critical one still asks, as does an unlinked user).
+   * `secretTtlMs`: how long a first-time linking QR lives (default 5 minutes, like the API).
    */
-  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; silent?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string };
+  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; silent?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string; secretTtlMs?: number };
   approve(id?: string, via?: string, extra?: { provisional?: boolean }): void;
   reject(id?: string): void;
   /** Vishing Shield: the phone tap moved the request to a passkey (still PENDING). */
@@ -225,18 +226,23 @@ export async function startFakeApi(): Promise<FakeApi> {
     res.json({ challenge: 'reg-challenge', rp: { id: 'example.com', name: 'Example' }, user: { name: user } });
   });
 
+  // A first-time linking QR lives 5 minutes, like the API's; opts.secretTtlMs shortens it.
+  const secretExpiry = () => {
+    const ttlMs = Number.isFinite(api.opts.secretTtlMs) ? api.opts.secretTtlMs as number : 300000;
+    return { expiresAt: new Date(Date.now() + ttlMs).toISOString(), ttlMs };
+  };
   app.post('/auth/generate-secret', (req, res) => {
     const user = req.body.externalUsername;
     if (api.linked.has(user)) return res.status(409).json({ error: 'already linked' });
     if (api.pendingSecrets.has(user)) return res.status(409).json({ error: 'Secret already generated' });
     api.pendingSecrets.add(user);
-    res.json({ secret: 'S', qrCodeDataUrl: `data:image/png;base64,QR-${user}`, externalUsername: user, expiresAt: 'soon', ttlMs: 300000, recoveryCodes: ['r1'] });
+    res.json({ secret: 'S', qrCodeDataUrl: `data:image/png;base64,QR-${user}`, externalUsername: user, ...secretExpiry(), recoveryCodes: ['r1'] });
   });
   app.post('/auth/secret/reset', (req, res) => {
     const user = req.body.externalUsername;
     api.linked.delete(user);
     api.pendingSecrets.add(user);
-    res.json({ success: true, secret: 'S2', qrCodeDataUrl: `data:image/png;base64,QR2-${user}`, externalUsername: user, recoveryCodes: ['r2'] });
+    res.json({ success: true, secret: 'S2', qrCodeDataUrl: `data:image/png;base64,QR2-${user}`, externalUsername: user, ...secretExpiry(), recoveryCodes: ['r2'] });
   });
   app.get('/users/:u', (req, res) => {
     const u = req.params.u;

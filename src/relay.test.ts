@@ -233,6 +233,87 @@ describe('touchqueRelay — rate limits (the same FixedWindowLimiter)', () => {
     expect((await post(relay, '/login', { externalUsername: 'user@example.com' })).status).toBe(429);
   });
 
+  test('polls that only keep the first-time QR are never charged to the user', async () => {
+    const relay = relayFor(api.client, { ip: () => '203.0.113.9', getLoginUser: () => 'new@example.com', rateLimit: { perUser: 2, perIp: 100 } });
+    const first = await (await post(relay, '/login')).json() as { touchque: { enroll: { qrCodeDataUrl: string; expiresAt: string } }; token: string };
+    expect(first.touchque.enroll.qrCodeDataUrl).toBeTruthy();
+    let token = first.token;
+    for (let i = 0; i < 12; i++) {
+      const poll = await post(relay, '/login', {}, { 'X-Touchque-Token': token });
+      expect(poll.status).toBe(202);
+      const body = await poll.json() as { touchque: unknown; token: string };
+      expect(body.touchque).toEqual({ state: 'enroll', expiresAt: first.touchque.enroll.expiresAt });
+      token = body.token;
+    }
+    api.linked.add('new@example.com');
+    const linked = await (await post(relay, '/login', {}, { 'X-Touchque-Token': token })).json() as { touchque: { state: string } };
+    expect(linked.touchque.state).toBe('waiting'); // the push after linking is the user's 2nd charge
+    expect(api.calls.filter((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset')).toHaveLength(1);
+  });
+
+  test('replaying the first-time QR token after linking is charged: 429 once the per-user budget is spent', async () => {
+    const relay = relayFor(api.client, { ip: () => '203.0.113.9', getLoginUser: () => 'new@example.com', rateLimit: { perUser: 3, perIp: 100 } });
+    const first = await (await post(relay, '/login')).json() as { token: string };
+    api.linked.add('new@example.com');
+    const replays: Response[] = [];
+    for (let i = 0; i < 4; i++) replays.push(await post(relay, '/login', {}, { 'X-Touchque-Token': first.token }));
+    expect(replays.map((r) => r.status)).toEqual([202, 202, 429, 429]);
+    expect(await replays[2].json()).toMatchObject({ error: 'RATE_LIMITED', retryAfter: expect.any(Number) });
+    expect(replays[2].headers.get('retry-after')).toBeTruthy();
+    expect(api.calls.filter((c) => c.path === '/login/request')).toHaveLength(3); // the first attempt and 2 pushes
+  });
+
+  test('a poll on a QR already within 15 s of its expiry is charged up front, as a fresh attempt', async () => {
+    api.opts.secretTtlMs = 10_000;
+    const relay = relayFor(api.client, { ip: () => '203.0.113.9', getLoginUser: () => 'new@example.com', rateLimit: { perUser: 2, perIp: 100 } });
+    let token = (await (await post(relay, '/login')).json() as { token: string }).token;
+    const statuses: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const poll = await post(relay, '/login', {}, { 'X-Touchque-Token': token });
+      statuses.push(poll.status);
+      token = (await poll.json() as { token?: string }).token ?? token;
+    }
+    expect(statuses).toEqual([202, 429, 429]);
+  });
+
+  test('a status poll whose QR reaches its renewal inside runGuard is charged to the user (beforeStart)', async () => {
+    api.opts.secretTtlMs = 15_400; // the 15 s margin begins 400 ms after the QR
+    const t0 = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(t0);
+    const getUser = api.client.auth.getUser.bind(api.client.auth);
+    // Reading the link state takes the clock past the margin: counted as a status poll, renewed in runGuard.
+    const slow = vi.spyOn(api.client.auth, 'getUser').mockImplementation(async (o) => { clock.mockReturnValue(t0 + 1_000); return getUser(o); });
+    try {
+      const relay = relayFor(api.client, { ip: () => '203.0.113.9', getLoginUser: () => 'new@example.com', rateLimit: { perUser: 3, perIp: 100 } });
+      const first = await (await post(relay, '/login')).json() as { token: string };
+      const statuses: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        clock.mockReturnValue(t0);
+        statuses.push((await post(relay, '/login', {}, { 'X-Touchque-Token': first.token })).status);
+      }
+      expect(statuses).toEqual([202, 202, 429]); // perUser 3: the first attempt and 2 renewals
+      expect(api.calls.filter((c) => c.path === '/auth/secret/reset')).toHaveLength(2);
+    } finally {
+      slow.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  test('a refusal names its state (and reason) in X-Touchque-State / X-Touchque-Reason', async () => {
+    const relay = relayFor(api.client, { rateLimit: false });
+    const first = await post(relay, '/login', { externalUsername: 'user@example.com' });
+    expect(first.headers.get('x-touchque-state')).toBeNull();
+    api.reject();
+    const rejected = await post(relay, '/login', { externalUsername: 'user@example.com' }, { 'X-Touchque-Token': (await first.json() as { token: string }).token });
+    expect(rejected.status).toBe(403);
+    expect(rejected.headers.get('x-touchque-state')).toBe('rejected');
+    expect(rejected.headers.get('x-touchque-reason')).toBeNull();
+    api.opts.blocked = 'geo_policy';
+    const blocked = await post(relay, '/login', { externalUsername: 'user@example.com' });
+    expect(blocked.headers.get('x-touchque-state')).toBe('blocked');
+    expect(blocked.headers.get('x-touchque-reason')).toBe('geo_policy');
+  });
+
   test('rateLimit: false turns the limiter off', async () => {
     const relay = relayFor(api.client, { rateLimit: false, ip: () => '203.0.113.7' });
     for (let i = 0; i < 30; i++) expect((await post(relay, '/login', { externalUsername: 'user@example.com' })).status).toBe(202);

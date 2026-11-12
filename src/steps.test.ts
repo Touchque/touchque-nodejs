@@ -1,5 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { Touchque, withTouchque, ipFromVercel, TouchqueConfigError, TouchqueError, runGuard, WebhookReasons, WebhookEvents } from './index';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { Touchque, withTouchque, ipFromVercel, TouchqueConfigError, TouchqueError, runGuard, WebhookReasons, WebhookEvents, signGuardToken, detailsDigest } from './index';
+import { isStatusPoll } from './guard';
+import type { GuardTokenClaims } from './steps';
 import { startFakeApi, FakeApi } from './testing/fakeApi';
 
 let api: FakeApi;
@@ -169,6 +171,105 @@ describe('withTouchque (Next.js / Fetch API)', () => {
     expect(await sent({ trustedProxyHops: 2 })).toBe('1.2.3.4');
     expect(await sent({ trustedProxyHops: 3 })).toBeUndefined();
     expect(await sent({ ip: ipFromVercel })).toBe('198.51.100.4');
+  });
+
+  test('errorBody: a refusal in the app\'s own shape, with the step; a string is sent as it is', async () => {
+    const shaped = withTouchque('SEND_MONEY', async () => Response.json({ ok: true }), {
+      client: api.client, user: (req) => req.headers.get('x-user'), errorBody: (r) => ({ message: r.message, code: r.code }),
+    });
+    const start = await (await call(shaped)).json() as { token: string; touchque: { requestId: string } };
+    api.reject();
+    const res = await call(shaped, { 'x-touchque-token': start.token });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('x-touchque-state')).toBe('rejected');
+    expect(res.headers.get('x-touchque-reason')).toBeNull();
+    expect(await res.json()).toEqual({ message: 'The approval was rejected.', code: 'rejected', touchque: { state: 'rejected', requestId: start.touchque.requestId } });
+    const text = withTouchque('SEND_MONEY', async () => Response.json({ ok: true }), { client: api.client, user: () => null, errorBody: (r) => r.message });
+    const anonymous = await call(text);
+    expect(await anonymous.text()).toBe('"Sign in first."');
+    expect(anonymous.headers.get('x-touchque-state')).toBe('blocked');
+    expect(anonymous.headers.get('x-touchque-reason')).toBe('unauthenticated');
+  });
+
+  test('no TQ_API_KEY / TQ_API_SECRET: 500 misconfigured for a signed-in user, 401 without one; the handler never runs', async () => {
+    const saved = { ...process.env };
+    delete process.env.TQ_API_KEY;
+    delete process.env.TQ_API_SECRET;
+    try {
+      const handler = vi.fn(async () => Response.json({ ok: true }));
+      const h = withTouchque('SEND_MONEY', handler, { user: (req) => req.headers.get('x-user') });
+      const res = await call(h);
+      expect(res.status).toBe(500);
+      expect(res.headers.get('content-type')).toBe('application/json');
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(res.headers.get('x-touchque-state')).toBe('blocked');
+      expect(res.headers.get('x-touchque-reason')).toBe('misconfigured');
+      expect(await res.json()).toEqual({
+        touchque: { state: 'blocked', reason: 'misconfigured' },
+        error: { code: 'misconfigured', message: 'Two-factor approval is not configured correctly.' },
+      });
+      const anonymous = await h(new Request('http://app.test/api/transfer', { method: 'POST' }));
+      expect(anonymous.status).toBe(401);
+      expect((await anonymous.json() as { error: { code: string } }).error.code).toBe('unauthenticated');
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      process.env = saved;
+    }
+  });
+});
+
+describe('runGuard — beforeStart (a relay charges what a poll on the first-time QR starts)', () => {
+  const input = { user: 'new@acme.com', action: 'LOGIN' };
+  const tokenOf = (r: { body?: { token?: string } }) => r.body!.token!;
+
+  test('called once, only when that poll would start something; a result it returns is the answer', async () => {
+    const first = await runGuard(api.client, input);
+    const hook = vi.fn(() => undefined);
+    const kept = await runGuard(api.client, { ...input, token: tokenOf(first), beforeStart: hook });
+    expect(kept.body?.touchque).toMatchObject({ state: 'enroll' });
+    expect(hook).not.toHaveBeenCalled(); // keeping the QR is no start
+
+    api.linked.add('new@acme.com');
+    api.calls.length = 0;
+    const limited = { status: 429, body: { touchque: { state: 'rate_limited' as const, retryAfter: 30 } } };
+    expect(await runGuard(api.client, { ...input, token: tokenOf(first), beforeStart: () => limited })).toBe(limited);
+    expect(api.calls).toHaveLength(1); // the link state only: no push
+    const linked = await runGuard(api.client, { ...input, token: tokenOf(first), beforeStart: hook });
+    expect(linked.body?.touchque.state).toBe('waiting');
+    expect(hook).toHaveBeenCalledTimes(1);
+    await runGuard(api.client, { ...input, token: tokenOf(linked), beforeStart: hook });
+    expect(hook).toHaveBeenCalledTimes(1); // a waiting poll never calls it
+  });
+
+  test('a QR at its expiry, or gone, is a start too', async () => {
+    api.opts.secretTtlMs = 10_000;
+    const hook = vi.fn(() => undefined);
+    const first = await runGuard(api.client, input);
+    const renewed = await runGuard(api.client, { ...input, token: tokenOf(first), beforeStart: hook });
+    expect(renewed.body?.touchque.enroll?.qrCodeDataUrl).toBe('data:image/png;base64,QR2-new@acme.com');
+    api.opts.secretTtlMs = undefined;
+    const fresh = await runGuard(api.client, { user: 'other@acme.com', action: 'LOGIN' });
+    api.pendingSecrets.delete('other@acme.com');
+    await runGuard(api.client, { user: 'other@acme.com', action: 'LOGIN', token: tokenOf(fresh), beforeStart: hook });
+    expect(hook).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('isStatusPoll (relays do not count status polls against the per-user push limit)', () => {
+  const token = (claims: Partial<GuardTokenClaims>) => signGuardToken('test_secret', {
+    u: 'jane@acme.com', a: 'LOGIN', d: detailsDigest([]), r: null, st: 'enroll', exp: Date.now() + 60_000, ...claims,
+  });
+  const poll = (t: string, extra: Record<string, unknown> = {}) => isStatusPoll(api.client, { user: 'jane@acme.com', action: 'LOGIN', token: t, ...extra });
+
+  test('a poll while the first-time QR is up is one; without its expiry, or within 15 s of it, it is not', () => {
+    expect(poll(token({ ee: Date.now() + 120_000 }))).toBe(true);
+    expect(poll(token({}))).toBe(false);
+    expect(poll(token({ ee: Date.now() + 10_000 }))).toBe(false);
+    expect(poll(token({ ee: Date.now() + 120_000, u: 'mallory@acme.com' }))).toBe(false);
+    expect(poll(token({ ee: Date.now() + 120_000 }), { offline: true })).toBe(false);
+    expect(poll(token({ st: 'waiting', rid: 'r1' }))).toBe(true);
+    expect(poll(token({ st: 'waiting' }))).toBe(false);
   });
 });
 

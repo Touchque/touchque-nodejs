@@ -142,6 +142,86 @@ describe('touchqueRouter — classic login (two-phase)', () => {
     expect((await request(app).post('/touchque/login').send({ externalUsername: 'user@example.com' })).status).toBe(429);
   });
 
+  test('polls that only keep the first-time QR are never charged to the user', async () => {
+    const app = appWithRouter(api.client, { getLoginUser: () => 'new@example.com', rateLimit: { perUser: 2, perIp: 100 } });
+    const first = await request(app).post('/touchque/login').send({});
+    expect(first.body.touchque.enroll.qrCodeDataUrl).toBeTruthy();
+    let token = first.body.token;
+    for (let i = 0; i < 12; i++) {
+      const poll = await request(app).post('/touchque/login').set('X-Touchque-Token', token).send({});
+      expect(poll.status).toBe(202);
+      expect(poll.body.touchque).toEqual({ state: 'enroll', expiresAt: first.body.touchque.enroll.expiresAt });
+      token = poll.body.token;
+    }
+    api.linked.add('new@example.com');
+    const linked = await request(app).post('/touchque/login').set('X-Touchque-Token', token).send({});
+    expect(linked.body.touchque.state).toBe('waiting'); // the push after linking is the user's 2nd charge
+    expect(api.calls.filter((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset')).toHaveLength(1);
+  });
+
+  test('replaying the first-time QR token after linking is charged: 429 once the per-user budget is spent', async () => {
+    const app = appWithRouter(api.client, { getLoginUser: () => 'new@example.com', rateLimit: { perUser: 3, perIp: 100 } });
+    const first = await request(app).post('/touchque/login').send({});
+    api.linked.add('new@example.com');
+    const replays = [];
+    for (let i = 0; i < 4; i++) replays.push(await request(app).post('/touchque/login').set('X-Touchque-Token', first.body.token).send({}));
+    expect(replays.map((r) => r.status)).toEqual([202, 202, 429, 429]);
+    expect(replays[2].body).toMatchObject({ error: 'RATE_LIMITED', retryAfter: expect.any(Number) });
+    expect(replays[2].headers['retry-after']).toBeTruthy();
+    expect(api.calls.filter((c) => c.path === '/login/request')).toHaveLength(3); // the first attempt and 2 pushes
+  });
+
+  test('a poll on a QR already within 15 s of its expiry is charged up front, as a fresh attempt', async () => {
+    api.opts.secretTtlMs = 10_000;
+    const app = appWithRouter(api.client, { getLoginUser: () => 'new@example.com', rateLimit: { perUser: 2, perIp: 100 } });
+    let token = (await request(app).post('/touchque/login').send({})).body.token;
+    const statuses: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const poll = await request(app).post('/touchque/login').set('X-Touchque-Token', token).send({});
+      statuses.push(poll.status);
+      token = poll.body.token ?? token;
+    }
+    expect(statuses).toEqual([202, 429, 429]);
+  });
+
+  test('a status poll whose QR reaches its renewal inside runGuard is charged to the user (beforeStart)', async () => {
+    api.opts.secretTtlMs = 15_400; // the 15 s margin begins 400 ms after the QR
+    const t0 = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(t0);
+    const getUser = api.client.auth.getUser.bind(api.client.auth);
+    // Reading the link state takes the clock past the margin: counted as a status poll, renewed in runGuard.
+    const slow = vi.spyOn(api.client.auth, 'getUser').mockImplementation(async (o) => { clock.mockReturnValue(t0 + 1_000); return getUser(o); });
+    try {
+      const app = appWithRouter(api.client, { getLoginUser: () => 'new@example.com', rateLimit: { perUser: 3, perIp: 100 } });
+      const first = await request(app).post('/touchque/login').send({});
+      const statuses: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        clock.mockReturnValue(t0);
+        statuses.push((await request(app).post('/touchque/login').set('X-Touchque-Token', first.body.token).send({})).status);
+      }
+      expect(statuses).toEqual([202, 202, 429]); // perUser 3: the first attempt and 2 renewals
+      expect(api.calls.filter((c) => c.path === '/auth/secret/reset')).toHaveLength(2);
+    } finally {
+      slow.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  test('a refusal names its state (and reason) in X-Touchque-State / X-Touchque-Reason', async () => {
+    const app = realApp();
+    const first = await request(app).post('/touchque/login').send({ externalUsername: 'user@example.com' });
+    expect(first.headers['x-touchque-state']).toBeUndefined();
+    api.reject();
+    const rejected = await request(app).post('/touchque/login').set('X-Touchque-Token', first.body.token).send({ externalUsername: 'user@example.com' });
+    expect(rejected.status).toBe(403);
+    expect(rejected.headers['x-touchque-state']).toBe('rejected');
+    expect(rejected.headers['x-touchque-reason']).toBeUndefined();
+    api.opts.blocked = 'geo_policy';
+    const blocked = await request(app).post('/touchque/login').send({ externalUsername: 'user@example.com' });
+    expect(blocked.headers['x-touchque-state']).toBe('blocked');
+    expect(blocked.headers['x-touchque-reason']).toBe('geo_policy');
+  });
+
   test('a forged or foreign token is a new attempt and is counted', async () => {
     const app = appWithRouter(api.client);
     for (let i = 0; i < 5; i++) await request(app).post('/touchque/login').set('X-Touchque-Token', 'forged').send({ externalUsername: 'user@example.com' });

@@ -36,7 +36,9 @@
 
 import { Touchque } from './index';
 import { TouchqueRejectedError, TouchqueTimeoutError, TouchquePasskeyRequiredError, TouchqueAPIError } from './errors';
-import { runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, SilentSignInOptions, GuardBody } from './guard';
+import {
+  runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, refusalHeaders, SilentSignInOptions, GuardBody,
+} from './guard';
 import type { LoginRequestDetails } from './types';
 import { FixedWindowLimiter, RateLimitOptions } from './rateLimiter';
 import { forwardedFor } from './next';
@@ -165,10 +167,10 @@ function relayError(error: unknown): Response {
   return json({ error: 'relay_error' }, 502);
 }
 
-/** The guard's answer while not approved: 202 with the step, or the refusal. */
+/** The guard's answer while not approved: 202 with the step, or the refusal with its X-Touchque-State / -Reason. */
 function guardResponse(result: { status: number; body: GuardBody }): Response {
   const retryAfter = result.body.touchque.retryAfter;
-  return json(result.body, result.status, retryAfter ? { 'Retry-After': String(retryAfter) } : undefined);
+  return json(result.body, result.status, { ...(retryAfter && { 'Retry-After': String(retryAfter) }), ...refusalHeaders(result) });
 }
 
 /** The JSON body (application/json only, at most 100 KiB), or the 400/413 to answer. */
@@ -333,11 +335,22 @@ export function touchqueRelay(tq: Touchque, options: TouchqueRelayOptions): (req
       ...silentInputFromHeaders(options.silentSignIn, header(req)),
     };
     // Polling an approval already sent is not a new attempt: its own, larger per-IP budget, never the user's.
-    const refused = isStatusPoll(tq, input)
+    const poll = isStatusPoll(tq, input);
+    const refused = poll
       ? limited(ip, 'login-poll', undefined, (limiter?.perIp ?? 0) * POLLS_PER_ATTEMPT)
       : limited(ip, 'login', externalUsername);
     if (refused) return refused;
-    const result = await runGuard(tq, input);
+    // A poll on the first-time QR that starts something (the phone was just linked, or the QR expired)
+    // is charged to the user like a new attempt: replaying an old token must not start pushes for free.
+    let overLimit = null as Response | null;
+    const result = await runGuard(tq, poll && limiter ? {
+      ...input,
+      beforeStart: () => {
+        overLimit = limited(undefined, 'login', externalUsername);
+        return overLimit ? { status: 429, body: { touchque: { state: 'rate_limited' } } } : undefined;
+      },
+    } : input);
+    if (overLimit) return overLimit;
     if (!result.approved) return guardResponse(result);
     const headers = new Headers();
     try {

@@ -67,6 +67,9 @@ That's the whole integration for one route. What actually happens:
    user to tap on their phone, or a QR code the first time they link the app —
    then sends the *same request* again with header `X-Touchque-Token: <token>`
    (see [`@touchque/web`](https://www.npmjs.com/package/@touchque/web), which does this loop for you).
+   While the first-time QR is up, polls answer `{ state: 'enroll', expiresAt }` without `enroll`:
+   keep showing the QR you have. A new QR comes with `enroll.qrCodeDataUrl` when the old one
+   expired. Pages on `@touchque/web` need 2.1.0.
 3. Once the user approves, that retried request reaches your handler exactly
    once, with `req.touchque` populated (`assurance`, `approvalProof`, …).
 
@@ -181,6 +184,120 @@ export async function POST(req: Request) {
 }
 ```
 
+### Your own error shape: `errorBody`
+
+Refusals answer `{ touchque, token }` by default; 401, 500 and 503 carry `{ touchque, error: { code, message } }`
+instead. `requireTouchque` and `withTouchque` take `errorBody` to answer in your app's own shape:
+
+```typescript
+app.post('/transfer', requireTouchque('SEND_MONEY', {
+  errorBody: (r) => ({ message: r.message, code: r.code }),
+}), handler);
+// 403 {"message":"The approval was rejected.","code":"rejected","touchque":{"state":"rejected",…}}
+```
+
+- It is called for every answer with status 400 or more: 401, 403, 408, 423, 429, 500 and 503. Never for a
+  202 step, never on approval.
+- It gets a `GuardRefusal`: `status`; `code` (`error.code` when the guard set one, else the step's `reason`,
+  else its `state`); `message` (`error.message` when set, else "The approval was rejected.", "The approval
+  expired. Try again.", "Too many rejected approvals. Try again later.", "Too many attempts. Try again later."
+  or "The approval was refused."); and `touchque`, a copy of the step as it would be sent.
+- What you return is judged by its JSON, as it will be sent. When it encodes to a JSON object (a plain
+  object, a class instance, an object with `toJSON()`, or a `Map`, read as its entries), it is sent with
+  `touchque` set to the step: the SDK's key wins, so `@touchque/web` still sees the state. No `token` is added.
+  Anything else (a string, number, array or `null`) is sent as it is, and `undefined` keeps the default body.
+  It may be `async`.
+- The status and headers stay the same: JSON, `Cache-Control: no-store`, `Retry-After`.
+- If it throws, or returns something JSON cannot encode (a `BigInt`, a cycle), the default body is sent and
+  your client's logger gets `[Touchque] errorBody failed: …`.
+
+### Refusal headers
+
+Every guard answer with status 400 or more, from `requireTouchque`, `withTouchque`, `touchqueRouter` and
+`touchqueRelay`, says what happened in headers too: `X-Touchque-State` (`rejected`, `blocked`, …) and, when
+the step has a reason, `X-Touchque-Reason`. `@touchque/web` 2.1.0 reads them when the body is your own
+shape without `touchque` (an `errorBody` that returns a string), so the page shows the refusal and never
+"Approved". When the page is on another origin, list them in your CORS `Access-Control-Expose-Headers`.
+
+### No API key
+
+The adapters never throw for a missing `TQ_API_KEY` / `TQ_API_SECRET`, at startup or on a request. Without
+`client`, they build the client on a request and keep it once built. Until then a guarded route answers
+**500** with `Cache-Control: no-store`, and your handler never runs:
+
+```json
+{"touchque":{"state":"blocked","reason":"misconfigured"},"error":{"code":"misconfigured","message":"Two-factor approval is not configured correctly."}}
+```
+
+A request with no signed-in user still gets the usual 401 `unauthenticated`. Settings that cannot work (a key
+that does not start with `tq_`, a plaintext `http://` `TQ_API_URL` other than localhost) answer the same 500.
+`@touchque/web` shows "Approvals are not set up correctly on this site." Nothing is logged: the SDK writes
+nothing on its own, and without a client it has no logger. To fail fast instead, build the client at startup:
+`new Touchque()` throws a `TouchqueConfigError` that names the problem.
+
+## Guard inside your handler
+
+When the approval belongs in the middle of your handler, after your own checks (the balance, who owns the
+record), call `runGuard` there instead of using a middleware. It is what the adapters run:
+
+```typescript
+import { Touchque, runGuard, GUARD_HEADERS } from '@touchque/node';
+
+const tq = new Touchque();
+
+app.post('/transfer', async (req, res) => {
+  // Your checks first: a transfer you would refuse never reaches the phone.
+  const t = await transfers.draft(req.user.id, req.body.transferId);
+  if (!t) return res.status(404).json({ error: 'not_found' });
+  if (t.amount > await accounts.balance(req.user.id)) return res.status(422).json({ error: 'insufficient_funds' });
+
+  const result = await runGuard(tq, {
+    user: req.user.email,
+    action: 'SEND_MONEY',
+    details: { Amount: `${t.amount} EUR`, To: t.iban },   // from your records, bound to the approval
+    referenceId: t.id,
+    ip: req.ip,
+    userAgent: req.get('user-agent'),
+    token: req.get(GUARD_HEADERS.token),
+    offline: req.get(GUARD_HEADERS.offline) === '1',
+    code: req.get(GUARD_HEADERS.code),
+    codeType: req.get(GUARD_HEADERS.codeType),
+  });
+  if (!result.approved) {
+    res.set('Cache-Control', 'no-store');
+    if ((result.status === 423 || result.status === 429) && result.body.touchque.retryAfter) {
+      res.set('Retry-After', String(result.body.touchque.retryAfter));
+    }
+    return res.status(result.status).json(result.body);
+  }
+  // Approved, and the approval is used up: do the protected thing now, once.
+  await transfers.send(t.id);
+  res.json({ ok: true, assurance: result.approved.assurance });
+});
+```
+
+`runGuard(tq, input)` never throws for a Touchque problem. It returns either `{ approved, status: 200 }` or
+`{ status, body }`; send `body` as JSON with that status, as above. The contract, the same in every Touchque
+server SDK:
+
+- **202** `{ touchque: step, token }`: show the step (a number to pick on the phone, the first-time QR, the
+  offline QR). The page sends the same request again with `X-Touchque-Token: <token>` every ~1.5 s until it
+  is approved or refused; `@touchque/web`'s `touchqueFetch` does this loop.
+- While the first-time QR is up, polls answer `{ state: 'enroll', expiresAt }` without `enroll`: keep
+  showing the QR you have. A new QR comes with `enroll.qrCodeDataUrl` when the old one expired. Pages on
+  `@touchque/web` need 2.1.0. Pass `enroll: false` when `user` is not proven by your own sign-in (a typed
+  username before the password step): the step then has no QR.
+- **200** with `approved` (`requestId`, `assurance`, `approvalProof`, …): approved once for this user,
+  action, details and `referenceId`. The same token never approves twice.
+- **401** `unauthenticated` (no `user`), **403** `rejected` or `blocked` (see `reason`), **408** `expired`,
+  **423** `frozen` and **429** `rate_limited` (both with `retryAfter`), **500** `misconfigured` (an action
+  type that is not defined), **503** `unavailable` (Touchque could not be reached).
+
+`beforeStart` in the input is plumbing for relays with a rate limit (`touchqueRouter` and `touchqueRelay` pass
+one): `runGuard` calls it when a poll on the first-time QR is about to start something (the push once the phone
+is linked, or a new QR), so the relay can charge that like a new attempt. A handler that guards one route
+does not need it.
+
 ## Passkeys (phishing-resistant)
 
 Push approval and offline codes stop password reuse and push fatigue, but a
@@ -188,7 +305,7 @@ real-time phishing proxy can still relay them. A passkey can't be phished: the
 browser signs your site's real origin and Touchque refuses any other
 (NIST SP 800-63B-4 §3.2.5).
 
-1. Set your passkey domain in the Dashboard (Security Policy → Passkeys).
+1. Set your passkey domain in the Dashboard (Developers → App user policy).
 2. Let users register one via `tq.webauthn` (server) + `@touchque/web`'s
    `passkeys.register()` (browser).
 3. Optionally require it for critical actions or every sign-in — Touchque then
@@ -652,6 +769,88 @@ if (purpose === 'approve') {
 
 `verifySafeApproval` makes the guard's check off chain, so a co-signer or your own server never has to trust Touchque: it computes the Safe transaction hash (EIP-712) and the governance hash from the raw fields, rebuilds the 149-byte message the phone signed and checks the P-256 signature for one purpose: `approve` unless you pass `purpose: 'schedule'`, so an approval to schedule a governance change (which leaves out the Safe nonce and gas) never passes as one to execute. It refuses a high `s`, an approval that expired or is valid for more than a day, another approver index, and, when you pass `rows` or `displayDigest` from your own decoding, rows the phone did not show. `reason` is `approval_malformed`, `public_key_invalid`, `approver_index_mismatch`, `approval_expired`, `rows_differ`, `high_s` or `signature_invalid`. `safeTxHash`, `safeGovernanceHash`, `safeApprovalMessage` and `safeDisplayDigest` are exported too.
 
+## Touchque Login (hosted sign-in)
+
+Sign-up and sign-in pages for your own customers, on your brand, over OpenID Connect: at
+`https://<slug>.login.touchque.com` or your own domain. In the dashboard, add **Touchque Login** under
+**Organization → Modules**, then follow the guide under **Touchque Login → Setup**: you choose your sign-in
+address and add your first app. More apps are under **Touchque Login → Setup → Apps** (**Add app**), each
+with its **Callback URLs**. The full guide (Next.js, single-page apps, the Management API):
+[support.touchque.com/touchque-login](https://support.touchque.com/touchque-login).
+
+`HostedLogin` is the OpenID Connect client. Every sign-in uses PKCE (S256), `state` and `nonce`, and the ID
+token is checked against your tenant's keys: signature, issuer, audience, expiry, nonce and `at_hash`.
+
+```typescript
+import { HostedLogin, HostedLoginError } from '@touchque/node';
+
+const login = new HostedLogin({
+  domain: 'acme.login.touchque.com',                // or your own domain
+  clientId: process.env.TQ_LOGIN_CLIENT_ID!,
+  clientSecret: process.env.TQ_LOGIN_CLIENT_SECRET,  // apps with a server; single-page and native apps leave it out
+  redirectUri: 'https://app.acme.com/callback',      // registered on the application
+  scope: 'openid profile email offline_access',      // offline_access: a refresh token too
+});
+
+// 1. Send the browser to `url`. Keep state, nonce and codeVerifier for the callback
+//    (in your session or a short-lived HttpOnly cookie).
+const { url, state, nonce, codeVerifier } = login.authorizationUrl({ screenHint: 'signup' });
+
+// 2. On the callback: checks state, exchanges the code with the PKCE verifier, verifies the ID token.
+try {
+  const tokens = await login.handleCallback(req.originalUrl, { state, nonce, codeVerifier });
+  tokens.claims?.sub;    // who signed in; also email, email_verified, name, org_id, amr…
+  tokens.accessToken;    // expiresAt is in Unix seconds
+  tokens.refreshToken;   // with offline_access; login.refresh() rotates it: keep the new one
+} catch (err) {
+  if (!(err instanceof HostedLoginError)) throw err;
+  // err.code: state_mismatch, access_denied, invalid_grant…
+}
+```
+
+- `new HostedLogin(config)`: `domain` and `clientId` are required. `domain` is your sign-in domain or the full
+  issuer URL, and must be `https://` (`http://` only on localhost). Also `clientSecret`, `redirectUri`, `scope`
+  (default `openid profile email`), `audience` (an access token for your API) and `clockToleranceSec`
+  (default 60).
+- `fetch`: the function `HostedLogin` calls Touchque with (default: the global `fetch` of Node.js 18+). Pass
+  your own to go through a proxy, add a timeout, or test without the network.
+- `authorizationUrl(options?)` returns `{ url, state, nonce, codeVerifier }`. Options: `screenHint: 'signup'`
+  (the sign-up page), `loginHint` (fills in the email), `prompt`, `uiLocales` (`tr`, `en`…), `maxAge`,
+  `connection` (straight to Google, Apple or an enterprise connection), `organization`, `invitation`,
+  `acrValues`, `audience`, `scope`, `redirectUri`, `responseMode` and `extraParams`.
+- `handleCallback(input, { state, nonce, codeVerifier, redirectUri?, maxAge? })` returns a `TokenSet`. `input`
+  is the callback URL (a string or a `URL`), its `URLSearchParams`, or the posted fields with
+  `responseMode: 'form_post'`.
+- `TokenSet`: `accessToken`, `tokenType`, `expiresAt`, `scope`, `idToken`, `refreshToken`, and `claims`: the
+  verified ID token's claims (`IdTokenClaims`: `sub`, `email`, `email_verified`, `name`, `given_name`,
+  `family_name`, `picture`, `locale`, `org_id`, `org_name`, `amr`, `acr`, `auth_time`, `sid` and your own).
+- `HostedLoginError` is a `TouchqueError` with `code`, `description` and `status` (the HTTP status when
+  Touchque answered). `code` is the OAuth error from the page or the token endpoint (`access_denied`,
+  `invalid_grant`, `login_required`…), or one of the SDK's own checks: `config`, `state_mismatch`,
+  `issuer_mismatch`, `nonce_mismatch`, `invalid_token`, `invalid_request`, `jwks_unavailable`,
+  `insufficient_scope` (status 403).
+- Also on the client: `refresh(refreshToken)`, `logoutUrl({ idTokenHint, postLogoutRedirectUri })`,
+  `revoke(token)`, `userinfo(accessToken)`, `verifyAccessToken(token, { audience, requiredScopes })` for your
+  API, `clientCredentials({ audience })` (machine to machine), `exchangeToken` (RFC 8693),
+  `getConnectionToken` (the provider's token from the token vault), `askUser` and `waitForUser` (the person
+  approves on the phone, CIBA), `myAccountToken`, `myAccount` and `accountUrl()`.
+
+With Express, three helpers do the routes and keep the session in an encrypted cookie (no store needed):
+
+```typescript
+import { hostedLoginRoutes, requireSignIn, requireAccessToken } from '@touchque/node';
+
+app.use(hostedLoginRoutes({ login, secret: process.env.SESSION_SECRET! }));   // /login, /callback, /logout
+app.get('/account', requireSignIn(), (req, res) => res.json(req.touchqueSession!.user));
+app.get('/api/orders', requireAccessToken(login, { audience: 'https://api.acme.com', scopes: ['read:orders'] }), handler);
+```
+
+`secret` is at least 32 random characters. `requireSignIn()` refreshes the access token shortly before it
+expires (with `offline_access`) and sends a signed-out browser to `/login?returnTo=…`; `{ api: true }` answers
+401 JSON instead. In Next.js (App Router), `createTouchqueLogin({ domain, clientId, clientSecret, secret,
+appUrl })` gives the route handlers and `getSession()`, and `touchqueMiddleware` from
+`@touchque/node/next/middleware` protects pages on the Edge.
+
 ## Errors
 
 All SDK errors extend `TouchqueError`: `TouchqueAPIError`, `TouchqueNetworkError`,
@@ -678,12 +877,8 @@ See [SECURITY.md](https://github.com/Touchque/touchque-nodejs/blob/main/SECURITY
 
 ## Logging
 
-The SDK writes nothing to the console on its own. To see its own problems (a misconfigured guard, a failed `onChallenge`, a relay mounted without `getLoginUser`), pass a logger: `new Touchque({ logger: console })`, or pino or winston (anything with `warn` and `error`); `debug: true` uses `console`. Lines carry an error's class, code and message, never a request or a user.
+The SDK writes nothing to the console on its own. To see its own problems (a misconfigured guard, a failed `onChallenge` or `errorBody`, a relay mounted without `getLoginUser`), pass a logger: `new Touchque({ logger: console })`, or pino or winston (anything with `warn` and `error`); `debug: true` uses `console`. Lines carry an error's class, code and message, never a request or a user. A guard with no API key has no client and so no logger: see [No API key](#no-api-key).
 
 ## License
 
 MIT © [Touchque](https://touchque.com)
-
-## Touchque Login (hosted sign-in)
-
-Sign-up and sign-in pages for your own customers, on your brand, with OpenID Connect. See [support.touchque.com/touchque-login](https://support.touchque.com/touchque-login) for this SDK's client and a quickstart.

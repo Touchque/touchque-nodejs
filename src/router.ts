@@ -44,7 +44,9 @@
 import type { Router, Request, Response } from 'express';
 import { Touchque } from './index';
 import { TouchqueRejectedError, TouchqueTimeoutError, TouchquePasskeyRequiredError, TouchqueAPIError } from './errors';
-import { runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, SilentSignInOptions } from './guard';
+import {
+  runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, refusalHeaders, SilentSignInOptions, GuardBody,
+} from './guard';
 import type { LoginRequestDetails } from './types';
 
 /** Reserved action: the approval on the phone that unlocks adding a passkey. */
@@ -173,6 +175,14 @@ function sendRelayError(res: Response, error: unknown): void {
   res.status(502).json({ error: 'relay_error' });
 }
 
+/** The guard's answer while not approved: 202 with the step, or the refusal with its X-Touchque-State / -Reason. */
+function sendGuardAnswer(res: Response, result: { status: number; body: GuardBody }): void {
+  if (result.body.touchque.retryAfter) res.set('Retry-After', String(result.body.touchque.retryAfter));
+  res.set('Cache-Control', 'no-store');
+  res.set(refusalHeaders(result));
+  res.status(result.status).json(result.body);
+}
+
 function requireUserId(req: Request, res: Response, getUserId: TouchqueRouterOptions['getUserId']): string | undefined {
   const userId = getUserId(req);
   if (!userId) {
@@ -214,16 +224,20 @@ export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Ro
   // A 1.5 s poll for a 2-minute push is 80 requests: one attempt's worth of polls.
   const POLLS_PER_ATTEMPT = 10;
 
+  /** The 429 for `wait` seconds. */
+  const tooMany = (res: Response, wait: number): false => {
+    res.set('Retry-After', String(wait));
+    res.status(429).json({ error: 'RATE_LIMITED', message: 'Too many attempts. Try again later.', retryAfter: wait });
+    return false;
+  };
+
   /** Answers 429 and returns false when this IP or this user is over the limit for `route`. */
   const allow = (req: Request, res: Response, route: string, user?: string, perIp?: number): boolean => {
     if (!limiter) return true;
     const ipWait = limiter.hit(`ip|${route}|${req.ip || 'unknown'}`, perIp ?? limiter.perIp);
     const userWait = user ? limiter.hit(`user|${route}|${user}`, limiter.perUser) : 0;
     const wait = Math.max(ipWait, userWait);
-    if (!wait) return true;
-    res.set('Retry-After', String(wait));
-    res.status(429).json({ error: 'RATE_LIMITED', message: 'Too many attempts. Try again later.', retryAfter: wait });
-    return false;
+    return wait ? tooMany(res, wait) : true;
   };
 
   /** Who a pre-auth route acts for: the first-factor user when configured, otherwise the typed username. */
@@ -312,15 +326,27 @@ export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Ro
     };
     // Polling an approval already sent is not a new attempt: it has its own,
     // larger per-IP budget and never uses the user's push budget.
-    const allowed = isStatusPoll(tq, input)
+    const poll = isStatusPoll(tq, input);
+    const allowed = poll
       ? allow(req, res, 'login-poll', undefined, (limiter?.perIp ?? 0) * POLLS_PER_ATTEMPT)
       : allow(req, res, 'login', externalUsername);
     if (!allowed) return;
-    const result = await runGuard(tq, input);
+    // A poll on the first-time QR that starts something (the phone was just linked, or the QR expired)
+    // is charged to the user like a new attempt: replaying an old token must not start pushes for free.
+    let overLimit = 0;
+    const result = await runGuard(tq, poll && limiter ? {
+      ...input,
+      beforeStart: () => {
+        overLimit = limiter.hit(`user|login|${externalUsername}`, limiter.perUser);
+        return overLimit ? { status: 429, body: { touchque: { state: 'rate_limited', retryAfter: overLimit } } } : undefined;
+      },
+    } : input);
+    if (overLimit) {
+      tooMany(res, overLimit);
+      return;
+    }
     if (!result.approved) {
-      if (result.body.touchque.retryAfter) res.set('Retry-After', String(result.body.touchque.retryAfter));
-      res.set('Cache-Control', 'no-store');
-      res.status(result.status).json(result.body);
+      sendGuardAnswer(res, result);
       return;
     }
     try {
@@ -506,9 +532,7 @@ export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Ro
       if (!allowed) return;
       const result = await runGuard(tq, input);
       if (!result.approved) {
-        if (result.body.touchque.retryAfter) res.set('Retry-After', String(result.body.touchque.retryAfter));
-        res.set('Cache-Control', 'no-store');
-        res.status(result.status).json(result.body);
+        sendGuardAnswer(res, result);
         return;
       }
       res.json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true, approvalRequestId: result.approved.requestId }));

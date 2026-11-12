@@ -208,7 +208,7 @@ function whyOf(res: { caseCode?: unknown; reasons?: unknown }): Pick<Step, 'case
 async function enrollStep(r: Resources, user: string): Promise<Step> {
   try {
     const gen = await r.auth.generateSecret({ externalUsername: user });
-    return { state: 'enroll', enroll: { qrCodeDataUrl: gen.qrCodeDataUrl, recoveryCodes: gen.recoveryCodes, expiresAt: gen.expiresAt } };
+    return { state: 'enroll', enroll: { qrCodeDataUrl: gen.qrCodeDataUrl, recoveryCodes: gen.recoveryCodes, ...qrExpiry(gen) } };
   } catch (err) {
     if (!(err instanceof TouchqueAPIError) || err.status !== 409) throw err;
     const current = await r.auth.getUser({ externalUsername: user }).catch(() => null);
@@ -218,8 +218,26 @@ async function enrollStep(r: Resources, user: string): Promise<Step> {
     }
     // A QR was issued earlier and not scanned yet: issue a new one (no device to lose).
     const reset = await r.auth.resetSecret({ externalUsername: user });
-    return { state: 'enroll', enroll: { qrCodeDataUrl: reset.qrCodeDataUrl as string, recoveryCodes: reset.recoveryCodes, expiresAt: reset.expiresAt } };
+    return { state: 'enroll', enroll: { qrCodeDataUrl: reset.qrCodeDataUrl as string, recoveryCodes: reset.recoveryCodes, ...qrExpiry(reset) } };
   }
+}
+
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+
+/**
+ * When a first-time QR stops working: the API's `expiresAt` when it is an ISO 8601
+ * time, else now + `ttlMs` when that is positive, else nothing. The guard keeps a QR
+ * with an expiry on screen while the page polls (see runGuard).
+ */
+function qrExpiry(res: { expiresAt?: unknown; ttlMs?: unknown }): { expiresAt?: string } {
+  if (typeof res.expiresAt === 'string' && ISO_TIME.test(res.expiresAt) && Number.isFinite(Date.parse(res.expiresAt))) {
+    return { expiresAt: res.expiresAt };
+  }
+  if (typeof res.ttlMs === 'number' && res.ttlMs > 0) {
+    const at = new Date(Date.now() + res.ttlMs);
+    if (Number.isFinite(at.getTime())) return { expiresAt: at.toISOString() };
+  }
+  return {};
 }
 
 /** Current state of a started approval. */
@@ -282,6 +300,7 @@ export interface GuardTokenClaims {
   n?: string; // matching number
   oc?: string; // offline challenge id
   cc?: string; // "Why?" case code, shown while waiting
+  ee?: number; // first-time QR: when it expires (ms); until then polls keep it on screen
   exp: number; // ms
 }
 

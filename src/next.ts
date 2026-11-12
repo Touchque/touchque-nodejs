@@ -12,11 +12,19 @@
 import { Touchque, getDefaultClient } from './index';
 import type { LoginRequestDetails } from './types';
 import type { Approval } from './steps';
-import { runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions } from './guard';
+import {
+  runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions, GuardRefusal, GuardResult,
+  adapterClient, withoutClient, answerBody, refusalHeaders,
+} from './guard';
 
 type MaybePromise<T> = T | Promise<T>;
 
 export interface WithTouchqueOptions {
+  /**
+   * Client to use (default: one built from TQ_API_KEY / TQ_API_SECRET on the
+   * first request). Without those, the route answers 500 `misconfigured` (401
+   * when no one is signed in) and the handler never runs; nothing throws.
+   */
   client?: Touchque;
   /** Who is approving — read it from YOUR session (required). */
   user: (req: Request) => MaybePromise<string | undefined | null>;
@@ -50,6 +58,18 @@ export interface WithTouchqueOptions {
    * last phone approval in that browser may be.
    */
   silentSignIn?: boolean | SilentSignInOptions;
+  /**
+   * Your app's own error shape for every answer of status 400 or more (401,
+   * 403, 408, 423, 429, 500, 503); never for a 202 step or an approval. Gets
+   * `{ status, code, message, touchque }`. What encodes to a JSON object (a
+   * class instance, `toJSON()`, a Map as its entries) is sent with `touchque`
+   * set to the step, so `@touchque/web` still sees the state; anything else
+   * (string, number, array, null) is sent as it is, and `undefined` keeps the
+   * default body. Status and headers stay the same. If it throws, or JSON
+   * cannot encode the result, the default body is sent and the client's logger
+   * gets the error.
+   */
+  errorBody?: (refusal: GuardRefusal) => unknown;
 }
 
 /** The X-Forwarded-For entry `hops` from the right, or undefined. */
@@ -71,30 +91,36 @@ export function withTouchque<Ctx = unknown>(
   options: WithTouchqueOptions,
 ): (req: Request, ctx?: Ctx) => Promise<Response> {
   return async (req: Request, ctx?: Ctx): Promise<Response> => {
-    const client = options.client || getDefaultClient();
-    const [user, details, referenceId, context] = await Promise.all([
-      options.user(req),
-      options.details ? options.details(req) : undefined,
-      options.referenceId ? options.referenceId(req) : undefined,
-      options.context ? options.context(req) : undefined,
-    ]);
-    const ip = options.ip ? options.ip(req) : forwardedFor(req, options.trustedProxyHops ?? 0);
-    const result = await runGuard(client, {
-      user: user ?? undefined,
-      action,
-      details,
-      referenceId: referenceId ?? undefined,
-      context: context ?? undefined,
-      ip,
-      userAgent: req.headers.get('user-agent') ?? undefined,
-      ...guardInputFromHeaders((name) => req.headers.get(name)),
-      ...silentInputFromHeaders(options.silentSignIn, (name) => req.headers.get(name)),
-    });
+    const client = adapterClient(options.client, getDefaultClient);
+    let result: GuardResult;
+    if (!client) {
+      // No TQ_API_KEY / TQ_API_SECRET: a JSON answer, never a throw.
+      result = withoutClient(await options.user(req));
+    } else {
+      const [user, details, referenceId, context] = await Promise.all([
+        options.user(req),
+        options.details ? options.details(req) : undefined,
+        options.referenceId ? options.referenceId(req) : undefined,
+        options.context ? options.context(req) : undefined,
+      ]);
+      const ip = options.ip ? options.ip(req) : forwardedFor(req, options.trustedProxyHops ?? 0);
+      result = await runGuard(client, {
+        user: user ?? undefined,
+        action,
+        details,
+        referenceId: referenceId ?? undefined,
+        context: context ?? undefined,
+        ip,
+        userAgent: req.headers.get('user-agent') ?? undefined,
+        ...guardInputFromHeaders((name) => req.headers.get(name)),
+        ...silentInputFromHeaders(options.silentSignIn, (name) => req.headers.get(name)),
+      });
+    }
     if (result.approved) {
       return handler(req, { ...(ctx as Ctx), touchque: result.approved });
     }
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...refusalHeaders(result) };
     if (result.body.touchque.retryAfter) headers['Retry-After'] = String(result.body.touchque.retryAfter);
-    return new Response(JSON.stringify(result.body), { status: result.status, headers });
+    return new Response(JSON.stringify(await answerBody(result, options.errorBody, client)), { status: result.status, headers });
   };
 }

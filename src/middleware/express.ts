@@ -13,12 +13,19 @@
 import type { Request, Response, NextFunction } from 'express';
 import { Touchque, getDefaultClient } from '../index';
 import type { LoginRequestDetails } from '../types';
-import { runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions } from '../guard';
+import {
+  runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions, GuardRefusal, GuardResult,
+  adapterClient, withoutClient, answerBody, refusalHeaders,
+} from '../guard';
 
 type MaybePromise<T> = T | Promise<T>;
 
 export interface TouchqueMiddlewareOptions {
-  /** Client to use (default: one built from TQ_API_KEY / TQ_API_SECRET). */
+  /**
+   * Client to use (default: one built from TQ_API_KEY / TQ_API_SECRET on the
+   * first request). Without those, guarded routes answer 500 `misconfigured`
+   * (401 when no one is signed in) and the handler never runs; nothing throws.
+   */
   client?: Touchque;
   /**
    * Who is approving. Default: `req.user.email || req.user.id || req.user.username`
@@ -51,6 +58,22 @@ export interface TouchqueMiddlewareOptions {
    * last phone approval in that browser may be.
    */
   silentSignIn?: boolean | SilentSignInOptions;
+  /**
+   * Your app's own error shape for every answer of status 400 or more (401,
+   * 403, 408, 423, 429, 500, 503); never for a 202 step or an approval. Gets
+   * `{ status, code, message, touchque }`. What encodes to a JSON object (a
+   * class instance, `toJSON()`, a Map as its entries) is sent with `touchque`
+   * set to the step, so `@touchque/web` still sees the state; anything else
+   * (string, number, array, null) is sent as it is, and `undefined` keeps the
+   * default body. Status and headers stay the same. If it throws, or JSON
+   * cannot encode the result, the default body is sent and the client's logger
+   * gets the error.
+   *
+   * @example
+   * errorBody: (r) => ({ message: r.message, code: r.code })
+   * // 403 {"message":"The approval was rejected.","code":"rejected","touchque":{"state":"rejected",…}}
+   */
+  errorBody?: (refusal: GuardRefusal) => unknown;
 }
 
 const defaultUser = (req: Request): string | undefined => {
@@ -85,23 +108,29 @@ export function requireTouchque(
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const client = explicitClient || getDefaultClient();
-      const [user, details, referenceId, context] = await Promise.all([
-        userOf(req), detailsOf ? detailsOf(req) : undefined, refOf ? refOf(req) : undefined,
-        options.context ? options.context(req) : undefined,
-      ]);
-      const header = (name: string) => req.get?.(name) ?? (req.headers?.[name] as string | undefined);
-      const result = await runGuard(client, {
-        user: user ?? undefined,
-        action,
-        details,
-        referenceId: referenceId ?? undefined,
-        context: context ?? undefined,
-        ip: req.ip,
-        userAgent: req.get?.('user-agent') ?? undefined,
-        ...guardInputFromHeaders(header),
-        ...silentInputFromHeaders(options.silentSignIn, header),
-      });
+      const client = adapterClient(explicitClient, getDefaultClient);
+      let result: GuardResult;
+      if (!client) {
+        // No TQ_API_KEY / TQ_API_SECRET: a JSON answer, never a throw.
+        result = withoutClient(await userOf(req));
+      } else {
+        const [user, details, referenceId, context] = await Promise.all([
+          userOf(req), detailsOf ? detailsOf(req) : undefined, refOf ? refOf(req) : undefined,
+          options.context ? options.context(req) : undefined,
+        ]);
+        const header = (name: string) => req.get?.(name) ?? (req.headers?.[name] as string | undefined);
+        result = await runGuard(client, {
+          user: user ?? undefined,
+          action,
+          details,
+          referenceId: referenceId ?? undefined,
+          context: context ?? undefined,
+          ip: req.ip,
+          userAgent: req.get?.('user-agent') ?? undefined,
+          ...guardInputFromHeaders(header),
+          ...silentInputFromHeaders(options.silentSignIn, header),
+        });
+      }
       if (result.approved) {
         (req as unknown as { touchque: unknown }).touchque = result.approved;
         next();
@@ -112,9 +141,23 @@ export function requireTouchque(
         if (retry) res.set('Retry-After', String(retry));
       }
       res.set('Cache-Control', 'no-store');
-      res.status(result.status).json(result.body);
+      res.set(refusalHeaders(result));
+      const body = await answerBody(result, options.errorBody, client, req.app?.get('json replacer'));
+      if (body === result.body) {
+        res.status(result.status).json(body);
+        return;
+      }
+      // errorBody's shape went through the app's JSON replacer already: sent without a second pass.
+      res.status(result.status).type('application/json')
+        .send(jsonText(body, req.app?.get('json spaces'), req.app?.get('json escape')));
     } catch (err) {
       next(err);
     }
   };
+}
+
+/** JSON text as Express's res.json writes it with the app's 'json spaces' and 'json escape', but no replacer. */
+function jsonText(value: unknown, spaces: string | number | undefined, escape: boolean | undefined): string {
+  const text = JSON.stringify(value, null, spaces);
+  return escape ? text.replace(/[<>&]/g, (c) => `\\u00${c.charCodeAt(0).toString(16)}`) : text;
 }

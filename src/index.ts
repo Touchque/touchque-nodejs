@@ -228,7 +228,7 @@ export { requireTouchque, TouchqueMiddlewareOptions } from './middleware/express
 export { withTouchque, WithTouchqueOptions, forwardedFor, ipFromVercel, ipFromCloudflare } from './next';
 export { createTouchqueLogin } from './nextLogin';
 export type { NextSession, TouchqueNextOptions, CookieSource } from './nextLogin';
-export { runGuard, GUARD_HEADERS, GuardInput, GuardResult, GuardBody, SilentSignInOptions } from './guard';
+export { runGuard, GUARD_HEADERS, GuardInput, GuardResult, GuardBody, GuardRefusal, SilentSignInOptions } from './guard';
 export { signGuardToken, verifyGuardToken, normalizeDetails } from './steps';
 export { touchqueRouter, TouchqueRouterOptions } from './router';
 // The same relay routes for Next.js (App Router) and other Fetch-API runtimes: Request in, Response out.

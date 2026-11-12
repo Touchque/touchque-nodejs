@@ -3,7 +3,25 @@
 All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [5.1.0] — 2026-11-12
+
+### Fixed
+- **The first-time QR stays the same while the page polls.** Each poll with an `enroll` token started again and replaced the QR and the recovery codes, so the QR being scanned stopped working. Now:
+  - An `enroll` step with a QR has `enroll.expiresAt`: the API's `expiresAt` when it is an ISO 8601 time, else now + `ttlMs`. Its token carries that expiry.
+  - While the QR is up, a poll only reads whether the phone is linked (`GET /users/{externalUsername}`) and answers 202 `{ touchque: { state: 'enroll', expiresAt }, token }`, without `enroll`: keep showing the QR you have.
+  - Once the phone is linked the approval starts as before. When the QR is within 15 seconds of its expiry, or gone, the poll brings a new QR with `enroll.qrCodeDataUrl`.
+  - `touchqueRouter` and `touchqueRelay` count these polls like other status polls, so their per-user limit no longer refuses them after a few seconds. What such a poll starts is still charged to the user like a new attempt: the push once the phone is linked, and a new QR (also when the token is an old one, replayed). Over the limit they answer their usual 429. `runGuard` has a `beforeStart` input for this; relays pass it, a handler that guards one route does not need it.
+  - Pages on `@touchque/web` need 2.1.0, which keeps the QR on screen for such a step.
+- **A missing API key no longer throws.** `requireTouchque` and `withTouchque` build the default client on a request and keep it once built. Without `TQ_API_KEY` / `TQ_API_SECRET` a guarded route answers 500 `misconfigured` in JSON (`Cache-Control: no-store`), or 401 `unauthenticated` when no one is signed in, and the handler never runs. `requireTouchque` used to pass the error to `next()`, which gave an HTML 500, and `withTouchque` threw.
+
+### Added
+- **`errorBody` on `requireTouchque` and `withTouchque`: your app's own error shape.** Called for every answer with status 400 or more (401, 403, 408, 423, 429, 500, 503), never for a 202 step or an approval, with a `GuardRefusal` (`status`, `code`, `message`, and `touchque`, a copy of the step). What it returns is judged by its JSON: what encodes to an object (a plain object, a class instance, `toJSON()`, a `Map` as its entries) is sent with `touchque` set to the step (the SDK's key wins, no `token`); anything else is sent as it is, and `undefined` keeps the default body. Status and headers do not change. A callback that throws, or a result JSON cannot encode, sends the default body and logs `[Touchque] errorBody failed: …` through the client's logger.
+- **Refusal headers.** Every guard answer with status 400 or more, from `requireTouchque`, `withTouchque`, `touchqueRouter` and `touchqueRelay`, carries `X-Touchque-State` and, when the step has a reason, `X-Touchque-Reason`. `@touchque/web` 2.1.0 reads them when the body has no `touchque` (an `errorBody` that returns a non-object). On another origin, expose them with `Access-Control-Expose-Headers`.
+- `GuardRefusal` type; `beforeStart` in `GuardInput`.
+- README: "Guard inside your handler" (`runGuard` after your own checks, what to answer, the poll contract), the `errorBody` option, what a missing key answers, and a Touchque Login section (`HostedLogin`, `authorizationUrl`, `handleCallback`, `TokenSet.claims`, `HostedLoginError`, the `fetch` option, the Express helpers).
+
+### Changed
+- README: the passkey domain is set in the dashboard under Developers → App user policy. Touchque Login is added under Organization → Modules and set up under Touchque Login → Setup.
 
 ## [5.0.0] — 2026-11-11
 
