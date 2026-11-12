@@ -1,6 +1,6 @@
 {
   "name": "@touchque/node",
-  "version": "5.1.0",
+  "version": "5.2.0",
   "description": "Official Node.js SDK for Touchque Authenticator (2FA/MFA, passkeys, adaptive auth)",
   "repository": {
     "type": "git",
@@ -32,6 +32,23 @@
         "types": "./dist/nextMiddleware.d.ts",
         "default": "./dist/nextMiddleware.js"
       }
+    },
+    "./testing": {
+      "import": {
+        "types": "./dist/testing.d.mts",
+        "default": "./dist/testing.mjs"
+      },
+      "require": {
+        "types": "./dist/testing.d.ts",
+        "default": "./dist/testing.js"
+      }
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "testing": [
+        "./dist/testing.d.ts"
+      ]
     }
   },
   "files": [

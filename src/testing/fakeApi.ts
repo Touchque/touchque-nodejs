@@ -24,6 +24,8 @@ export interface FakeRequest {
   challengeCode?: string; requiresPasskey?: boolean; consumed: boolean; confirmedVia?: string;
   provisional?: boolean; reconfirmedAt?: string; revokedAt?: string; revokeReason?: 'UNDO' | 'COACHED';
   browserProof?: string;
+  /** When it expires (ISO 8601): 30 s after it was made; escalate() extends it to 180 s, like the API. */
+  expiresAt?: string;
 }
 
 /** A browser made known by an approved request that carried `browserProof`. */
@@ -53,7 +55,7 @@ export interface FakeApi {
   opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; silent?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string; secretTtlMs?: number };
   approve(id?: string, via?: string, extra?: { provisional?: boolean }): void;
   reject(id?: string): void;
-  /** Vishing Shield: the phone tap moved the request to a passkey (still PENDING). */
+  /** Vishing Shield: the phone tap moved the request to a passkey (still PENDING), open 180 s more for the ceremony. */
   escalate(id?: string): void;
   revoke(id?: string, reason?: 'UNDO' | 'COACHED'): void;
   reconfirm(id?: string): void;
@@ -141,11 +143,12 @@ export async function startFakeApi(): Promise<FakeApi> {
       challengeCode: api.opts.passkeyOnly ? undefined : (api.opts.numberMatch || action.critical ? '47' : undefined),
       requiresPasskey: api.opts.passkeyOnly || undefined,
       browserProof: req.body.browserProof || undefined,
+      expiresAt: new Date(Date.now() + 30000).toISOString(),
     };
     api.requests.push(r);
     const why = [...(r.requiresPasskey ? ['passkey_required'] : []), ...(action.critical ? ['critical_action'] : []), ...(api.opts.numberMatch ? ['number_match_requested'] : [])];
     res.json({
-      message: 'Request sent', requestId: r.id, challengeCode: r.challengeCode, expiresAt: new Date(Date.now() + 30000).toISOString(), requiresPasskey: r.requiresPasskey,
+      message: 'Request sent', requestId: r.id, challengeCode: r.challengeCode, expiresAt: r.expiresAt, requiresPasskey: r.requiresPasskey,
       caseCode: 'K7P-2QX', ...(why.length && { reasons: reasons(...why) }),
       ...(api.opts.telemetry && { telemetryToken: 'tt_test' }),
       ...(api.opts.canary && { canary: { url: `http://127.0.0.1:1/c/canary-${r.id}.gif` } }),
@@ -162,6 +165,8 @@ export async function startFakeApi(): Promise<FakeApi> {
       status: r.status, externalUsername: r.user, type: r.type, referenceId: r.referenceId, details: r.details, consumed: r.consumed,
       requiresPasskey: r.requiresPasskey, confirmedVia: r.confirmedVia || null,
       assurance: r.status === 'CONFIRMED' ? { phishingResistant: r.confirmedVia === 'WEBAUTHN', method: r.confirmedVia === 'WEBAUTHN' ? 'passkey' : 'push' } : null,
+      // The request's live expiry, as the API answers it (a Vishing Shield escalation extends it).
+      ...(r.expiresAt && { expiresAt: r.expiresAt }),
       ...shieldFields(r),
     });
   });
@@ -291,7 +296,8 @@ export async function startFakeApi(): Promise<FakeApi> {
       rememberBrowser(r);
     },
     reject(id?: string) { pick(id).status = 'REJECTED'; },
-    escalate(id?: string) { const r = pick(id); r.requiresPasskey = true; r.challengeCode = undefined; },
+    // Like the API: an approval escalated to a passkey stays open 180 s for the ceremony.
+    escalate(id?: string) { const r = pick(id); r.requiresPasskey = true; r.challengeCode = undefined; r.expiresAt = new Date(Date.now() + 180000).toISOString(); },
     revoke(id?: string, reason: 'UNDO' | 'COACHED' = 'COACHED') { const r = pick(id); r.revokedAt = new Date().toISOString(); r.revokeReason = reason; },
     reconfirm(id?: string) { pick(id).reconfirmedAt = new Date().toISOString(); },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),

@@ -68,8 +68,9 @@ That's the whole integration for one route. What actually happens:
    then sends the *same request* again with header `X-Touchque-Token: <token>`
    (see [`@touchque/web`](https://www.npmjs.com/package/@touchque/web), which does this loop for you).
    While the first-time QR is up, polls answer `{ state: 'enroll', expiresAt }` without `enroll`:
-   keep showing the QR you have. A new QR comes with `enroll.qrCodeDataUrl` when the old one
-   expired. Pages on `@touchque/web` need 2.1.0.
+   keep showing the QR you have. About 15 s before it expires, a poll brings a new QR
+   (`enroll.qrCodeDataUrl`) with new recovery codes; the old QR and the old codes stop working.
+   Pages on `@touchque/web` need 2.1.0.
 3. Once the user approves, that retried request reaches your handler exactly
    once, with `req.touchque` populated (`assurance`, `approvalProof`, …).
 
@@ -101,13 +102,14 @@ const step = await tq.start('SEND_MONEY', {
   user: 'jane@acme.com',
   details: { Amount: '250 EUR', To: 'DE89...' },
 });
-// step.state: 'waiting' (show step.number) | 'enroll' (show step.enroll.qrCodeDataUrl)
-//             | 'approved' | 'rejected' | 'expired' | 'passkey_required' | 'frozen' | 'blocked'
+// step.state: 'waiting' (show step.number) | 'enroll' (show step.enroll.qrCodeDataUrl;
+//             with enroll: false, reason 'enrollment_off' and no QR) | 'approved' | 'rejected'
+//             | 'expired' | 'passkey_required' | 'frozen' | 'blocked'
 
-const latest = await tq.check(step.id);
+const latest = await tq.check(step.requestId!); // with the request's current expiresAt
 
 // Once approved, consume it exactly once, right before doing the protected thing:
-const approval = await tq.complete(step.id, {
+const approval = await tq.complete(step.requestId!, {
   user: 'jane@acme.com',
   action: 'SEND_MONEY',
   details: { Amount: '250 EUR', To: 'DE89...' },
@@ -187,7 +189,7 @@ export async function POST(req: Request) {
 ### Your own error shape: `errorBody`
 
 Refusals answer `{ touchque, token }` by default; 401, 500 and 503 carry `{ touchque, error: { code, message } }`
-instead. `requireTouchque` and `withTouchque` take `errorBody` to answer in your app's own shape:
+instead. `requireTouchque`, `withTouchque` and `guardResponse` take `errorBody` to answer in your app's own shape:
 
 ```typescript
 app.post('/transfer', requireTouchque('SEND_MONEY', {
@@ -209,21 +211,22 @@ app.post('/transfer', requireTouchque('SEND_MONEY', {
   It may be `async`.
 - The status and headers stay the same: JSON, `Cache-Control: no-store`, `Retry-After`.
 - If it throws, or returns something JSON cannot encode (a `BigInt`, a cycle), the default body is sent and
-  your client's logger gets `[Touchque] errorBody failed: …`.
+  your client's logger gets `[Touchque] errorBody failed: …` (with `guardResponse`, the `logger` you pass).
 
 ### Refusal headers
 
-Every guard answer with status 400 or more, from `requireTouchque`, `withTouchque`, `touchqueRouter` and
-`touchqueRelay`, says what happened in headers too: `X-Touchque-State` (`rejected`, `blocked`, …) and, when
+Every guard answer with status 400 or more, from `requireTouchque`, `withTouchque`, `guardResponse`,
+`touchqueRouter` and `touchqueRelay`, says what happened in headers too: `X-Touchque-State` (`rejected`, `blocked`, …) and, when
 the step has a reason, `X-Touchque-Reason`. `@touchque/web` 2.1.0 reads them when the body is your own
 shape without `touchque` (an `errorBody` that returns a string), so the page shows the refusal and never
 "Approved". When the page is on another origin, list them in your CORS `Access-Control-Expose-Headers`.
 
 ### No API key
 
-The adapters never throw for a missing `TQ_API_KEY` / `TQ_API_SECRET`, at startup or on a request. Without
-`client`, they build the client on a request and keep it once built. Until then a guarded route answers
-**500** with `Cache-Control: no-store`, and your handler never runs:
+The adapters, and `runGuard(null, …)` in your own handler, never throw for a missing `TQ_API_KEY` /
+`TQ_API_SECRET`, at startup or on a request. Without `client`, they build the client on a request and keep it
+once built. Until then a guarded route answers **500** with `Cache-Control: no-store`, and the protected
+handler or action never runs:
 
 ```json
 {"touchque":{"state":"blocked","reason":"misconfigured"},"error":{"code":"misconfigured","message":"Two-factor approval is not configured correctly."}}
@@ -232,8 +235,15 @@ The adapters never throw for a missing `TQ_API_KEY` / `TQ_API_SECRET`, at startu
 A request with no signed-in user still gets the usual 401 `unauthenticated`. Settings that cannot work (a key
 that does not start with `tq_`, a plaintext `http://` `TQ_API_URL` other than localhost) answer the same 500.
 `@touchque/web` shows "Approvals are not set up correctly on this site." Nothing is logged: the SDK writes
-nothing on its own, and without a client it has no logger. To fail fast instead, build the client at startup:
-`new Touchque()` throws a `TouchqueConfigError` that names the problem.
+nothing on its own, and without a client it has no logger.
+
+- To fail fast instead, call `getDefaultClient()` at startup: it builds the default client and throws a
+  `TouchqueConfigError` that names the problem.
+- To have a logger on these paths, set the default client yourself:
+  `setDefaultClient(new Touchque({ logger: console }))` (your pino or winston works too). The adapters and
+  `runGuard(null, …)` then use it. `new Touchque()` throws without the keys, as `getDefaultClient()` does: set
+  it only when they are present, or catch the `TouchqueConfigError` to keep the 500 answer.
+  `setDefaultClient(null)` forgets it, and the next request builds one from the environment again.
 
 ## Guard inside your handler
 
@@ -241,9 +251,7 @@ When the approval belongs in the middle of your handler, after your own checks (
 record), call `runGuard` there instead of using a middleware. It is what the adapters run:
 
 ```typescript
-import { Touchque, runGuard, GUARD_HEADERS } from '@touchque/node';
-
-const tq = new Touchque();
+import { runGuard, guardResponse, GUARD_HEADERS } from '@touchque/node';
 
 app.post('/transfer', async (req, res) => {
   // Your checks first: a transfer you would refuse never reaches the phone.
@@ -251,7 +259,8 @@ app.post('/transfer', async (req, res) => {
   if (!t) return res.status(404).json({ error: 'not_found' });
   if (t.amount > await accounts.balance(req.user.id)) return res.status(422).json({ error: 'insufficient_funds' });
 
-  const result = await runGuard(tq, {
+  // null: the default client, built from TQ_API_KEY / TQ_API_SECRET on a request and kept.
+  const result = await runGuard(null, {
     user: req.user.email,
     action: 'SEND_MONEY',
     details: { Amount: `${t.amount} EUR`, To: t.iban },   // from your records, bound to the approval
@@ -264,11 +273,9 @@ app.post('/transfer', async (req, res) => {
     codeType: req.get(GUARD_HEADERS.codeType),
   });
   if (!result.approved) {
-    res.set('Cache-Control', 'no-store');
-    if ((result.status === 423 || result.status === 429) && result.body.touchque.retryAfter) {
-      res.set('Retry-After', String(result.body.touchque.retryAfter));
-    }
-    return res.status(result.status).json(result.body);
+    // The 202 step or the refusal, exactly as requireTouchque would send it.
+    const { status, headers, body } = await guardResponse(result);
+    return res.status(status).set(headers).json(body);
   }
   // Approved, and the approval is used up: do the protected thing now, once.
   await transfers.send(t.id);
@@ -276,22 +283,41 @@ app.post('/transfer', async (req, res) => {
 });
 ```
 
-`runGuard(tq, input)` never throws for a Touchque problem. It returns either `{ approved, status: 200 }` or
-`{ status, body }`; send `body` as JSON with that status, as above. The contract, the same in every Touchque
-server SDK:
+`runGuard(client, input)` never throws for a Touchque problem. Pass `null` for the default client, the one the
+adapters use: it is built from `TQ_API_KEY` / `TQ_API_SECRET` on a request and kept once built, so a missing
+key answers 500 `misconfigured` (401 without a `user`) instead of stopping your app at startup. Or pass your
+own `Touchque`. It returns either `{ approved, status: 200 }` or `{ status, body }`. To fail fast, call
+`getDefaultClient()` at startup (it throws a `TouchqueConfigError` that names the problem). The null path
+logs nothing; for a logger, set `setDefaultClient(new Touchque({ logger: console }))` at startup. Like
+`getDefaultClient()`, `new Touchque()` throws without the keys: set it only when they are present, or catch the
+`TouchqueConfigError` to keep the 500 answer.
+
+`guardResponse(result, { errorBody?, logger? })` turns a result that is not approved into
+`{ status, headers, body }`: what `requireTouchque` and `withTouchque` send, as they use it too.
+`Cache-Control: no-store`; `Retry-After` on 423 and 429; `X-Touchque-State` and `X-Touchque-Reason` on 400
+or more; your `errorBody` shape. Send `body` with your framework's JSON (in a Fetch handler,
+`Response.json(body, { status, headers })`).
+
+The contract, the same in every Touchque server SDK:
 
 - **202** `{ touchque: step, token }`: show the step (a number to pick on the phone, the first-time QR, the
   offline QR). The page sends the same request again with `X-Touchque-Token: <token>` every ~1.5 s until it
-  is approved or refused; `@touchque/web`'s `touchqueFetch` does this loop.
+  is approved or refused; `@touchque/web`'s `touchqueFetch` does this loop. Every answer while the push or
+  passkey waits (`waiting`, `passkey_required`) carries the request's current `expiresAt`, so a page can stop
+  once it has passed. It can move later: a push tapped during a call moves to a passkey with 180 s more.
 - While the first-time QR is up, polls answer `{ state: 'enroll', expiresAt }` without `enroll`: keep
-  showing the QR you have. A new QR comes with `enroll.qrCodeDataUrl` when the old one expired. Pages on
-  `@touchque/web` need 2.1.0. Pass `enroll: false` when `user` is not proven by your own sign-in (a typed
-  username before the password step): the step then has no QR.
+  showing the QR you have. About 15 s before it expires, a poll brings a new QR (`enroll.qrCodeDataUrl`) with
+  new recovery codes; the old QR and the old codes stop working. Pages on `@touchque/web` need 2.1.0.
+- Pass `enroll: false` when `user` is not proven by your own sign-in (a typed username before the password
+  step). A user with no phone then gets 202 `{ state: 'enroll', reason: 'enrollment_off' }`: a final answer
+  with no QR. Stop polling and ask them to link the Touchque app first (`@touchque/web` 2.2.0 does).
+- A 202 state other than `waiting` or `enroll` without a reason (`passkey_required`, `offline`, `enroll` with
+  a `reason`) needs `@touchque/web`, or your own UI following this contract.
 - **200** with `approved` (`requestId`, `assurance`, `approvalProof`, …): approved once for this user,
   action, details and `referenceId`. The same token never approves twice.
 - **401** `unauthenticated` (no `user`), **403** `rejected` or `blocked` (see `reason`), **408** `expired`,
   **423** `frozen` and **429** `rate_limited` (both with `retryAfter`), **500** `misconfigured` (an action
-  type that is not defined), **503** `unavailable` (Touchque could not be reached).
+  type that is not defined, or no API key), **503** `unavailable` (Touchque could not be reached).
 
 `beforeStart` in the input is plumbing for relays with a rate limit (`touchqueRouter` and `touchqueRelay` pass
 one): `runGuard` calls it when a poll on the first-time QR is about to start something (the push once the phone
@@ -850,6 +876,63 @@ expires (with `offline_access`) and sends a signed-out browser to `/login?return
 401 JSON instead. In Next.js (App Router), `createTouchqueLogin({ domain, clientId, clientSecret, secret,
 appUrl })` gives the route handlers and `getSession()`, and `touchqueMiddleware` from
 `@touchque/node/next/middleware` protects pages on the Edge.
+
+## Testing your routes
+
+`@touchque/node/testing` has `FakeTouchque`: a `Touchque` client that answers in memory, with no network, no
+API keys and no dependency of its own. The real guard runs, so your routes answer what they answer in
+production, and your test plays the phone:
+
+```typescript
+// transfer.test.ts
+import { test, expect, beforeEach, afterEach } from 'vitest'; // in Jest these are globals: leave this line out
+import express from 'express';
+import request from 'supertest';
+import { requireTouchque } from '@touchque/node';
+import { FakeTouchque } from '@touchque/node/testing';
+
+const app = express(); // your app: its guards are given no `client`
+app.use(express.json());
+app.use((req, _res, next) => { (req as any).user = { email: 'jane@acme.com' }; next(); }); // your sign-in
+app.post('/transfer',
+  requireTouchque('SEND_MONEY', { details: (req) => ({ Amount: `${req.body.amount} EUR` }) }),
+  (_req, res) => res.json({ ok: true }));
+
+let tq: FakeTouchque;
+beforeEach(() => { tq = new FakeTouchque().install(); }); // the default client until uninstall()
+afterEach(() => tq.uninstall());
+
+test('a transfer waits for the approval on the phone', async () => {
+  const first = await request(app).post('/transfer').send({ amount: 5 });
+  expect(first.status).toBe(202);
+  expect(first.body.touchque.state).toBe('waiting');
+
+  tq.approve(); // the person approves on the phone
+  const done = await request(app).post('/transfer').set('X-Touchque-Token', first.body.token).send({ amount: 5 });
+  expect(done.status).toBe(200);
+  expect(tq.requests.at(-1)?.details).toEqual([{ label: 'Amount', value: '5 EUR' }]);
+});
+```
+
+- `install()` makes it the default client: the one routes without `client` and `runGuard(null, …)` use.
+  `uninstall()` puts back the one it replaced. A route given `client` uses that one: pass the fake there instead.
+- `tq.approve()`, `tq.reject()`, `tq.expire()`: the latest request, or one by its id (`tq.approve(requestId)`;
+  `tq.approve(requestId, 'WEBAUTHN')` approves with a passkey).
+- `new FakeTouchque({ autoApprove: true })` (or `tq.autoApprove = true`): every request is approved as it is
+  made. The first request still answers 202; the next one runs the route.
+- Every user has a phone linked. `tq.unlink(user)` shows them the first-time QR instead
+  (`new FakeTouchque({ linked: false })`: nobody has one); `tq.link(user)` is the phone scanning it.
+  `tq.secretTtlMs` is how long a QR works (5 minutes).
+- `new FakeTouchque({ numberMatch: true })`: pushes ask for the number `47`.
+- `tq.requests` (`id`, `user`, `type`, `details`, `referenceId`, `status`, `expiresAt`, …) and `tq.calls`
+  (`method`, `path`, `body`): what your app asked Touchque, in order. Each request's `expiresAt` is 30 s after it
+  was made, and its status answer and every poll carry it (set a later one to extend it). The fake never expires a
+  request by time: call `tq.expire()`.
+- Offline approval: the code is `tq.offlineCode` (`ABCD123`), the time-based code `tq.totpCode` (`123456`).
+  `{ logger }` gets the SDK's own log lines, as on a real client. Calls outside the step-up (recovery,
+  agents …) throw `TouchqueAPIError` 404.
+- Load it the way your app loads `@touchque/node` (both `import`, or both `require`), so the fake and your
+  guards come from the same build.
 
 ## Errors
 

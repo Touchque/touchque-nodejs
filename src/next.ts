@@ -14,8 +14,9 @@ import type { LoginRequestDetails } from './types';
 import type { Approval } from './steps';
 import {
   runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions, GuardRefusal, GuardResult,
-  adapterClient, withoutClient, answerBody, refusalHeaders,
+  adapterClient, withoutClient, respond,
 } from './guard';
+import { logOf } from './internal';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -119,8 +120,8 @@ export function withTouchque<Ctx = unknown>(
     if (result.approved) {
       return handler(req, { ...(ctx as Ctx), touchque: result.approved });
     }
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...refusalHeaders(result) };
-    if (result.body.touchque.retryAfter) headers['Retry-After'] = String(result.body.touchque.retryAfter);
-    return new Response(JSON.stringify(await answerBody(result, options.errorBody, client)), { status: result.status, headers });
+    // What guardResponse() gives.
+    const answer = await respond(result, options.errorBody, logOf(client));
+    return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { 'Content-Type': 'application/json', ...answer.headers } });
   };
 }

@@ -45,7 +45,7 @@ import type { Router, Request, Response } from 'express';
 import { Touchque } from './index';
 import { TouchqueRejectedError, TouchqueTimeoutError, TouchquePasskeyRequiredError, TouchqueAPIError } from './errors';
 import {
-  runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, refusalHeaders, SilentSignInOptions, GuardBody,
+  runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, guardResponse, SilentSignInOptions, GuardBody,
 } from './guard';
 import type { LoginRequestDetails } from './types';
 
@@ -175,12 +175,11 @@ function sendRelayError(res: Response, error: unknown): void {
   res.status(502).json({ error: 'relay_error' });
 }
 
-/** The guard's answer while not approved: 202 with the step, or the refusal with its X-Touchque-State / -Reason. */
-function sendGuardAnswer(res: Response, result: { status: number; body: GuardBody }): void {
-  if (result.body.touchque.retryAfter) res.set('Retry-After', String(result.body.touchque.retryAfter));
-  res.set('Cache-Control', 'no-store');
-  res.set(refusalHeaders(result));
-  res.status(result.status).json(result.body);
+/** The guard's answer while not approved, as the adapters send it: 202 with the step, or the refusal with its X-Touchque-State / -Reason. */
+async function sendGuardAnswer(res: Response, result: { status: number; body: GuardBody }): Promise<void> {
+  const answer = await guardResponse(result);
+  res.set(answer.headers);
+  res.status(answer.status).json(answer.body);
 }
 
 function requireUserId(req: Request, res: Response, getUserId: TouchqueRouterOptions['getUserId']): string | undefined {
@@ -346,7 +345,7 @@ export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Ro
       return;
     }
     if (!result.approved) {
-      sendGuardAnswer(res, result);
+      await sendGuardAnswer(res, result);
       return;
     }
     try {
@@ -532,7 +531,7 @@ export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Ro
       if (!allowed) return;
       const result = await runGuard(tq, input);
       if (!result.approved) {
-        sendGuardAnswer(res, result);
+        await sendGuardAnswer(res, result);
         return;
       }
       res.json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true, approvalRequestId: result.approved.requestId }));

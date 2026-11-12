@@ -2,7 +2,7 @@
 // The heart of the SDK — all HTTP communication with the Touchque API.
 // Every request is signed with HMAC-SHA256 (the developer never sees this).
 
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosInstance, AxiosError, type AxiosAdapter } from 'axios';
 import * as crypto from 'crypto';
 import { TouchqueConfig } from '../types';
 import { TouchqueAPIError, TouchqueConfigError, TouchqueNetworkError, apiError } from '../errors';
@@ -56,6 +56,23 @@ export function sdkLog(config: Pick<TouchqueConfig, 'logger' | 'debug'>): SdkLog
   };
 }
 
+/** One call to the API, for an in-memory transport (`@touchque/node/testing`). */
+export interface TransportCall {
+  method: string;
+  /** The path with its query string, as signed (`/users/jane%40acme.com`). */
+  path: string;
+  /** The JSON body sent; `{}` for none. */
+  body: unknown;
+}
+
+/** The API's answer to a TransportCall: a status and a JSON body. */
+export interface TransportAnswer {
+  status: number;
+  body: unknown;
+}
+
+export type Transport = (call: TransportCall) => TransportAnswer | Promise<TransportAnswer>;
+
 /** `Name (code): message` for a log line: never the error object, its request or its stack. */
 export function describeError(err: unknown): string {
   if (!(err instanceof Error)) return typeof err === 'string' ? err : 'unknown error';
@@ -105,6 +122,26 @@ export class HttpClient {
       maxContentLength: TEN_MB,
       maxBodyLength: TEN_MB,
     });
+  }
+
+  /**
+   * Internal (`@touchque/node/testing`): every call goes to `transport`, in
+   * memory, instead of over the network. Calls are signed and answers read as
+   * usual, so a status of 400 or more throws what the same answer from Touchque
+   * would.
+   */
+  useTransport(transport: Transport): void {
+    const adapter: AxiosAdapter = async (config) => {
+      const sent = typeof config.data === 'string' && config.data ? JSON.parse(config.data) : {};
+      const answer = await transport({ method: String(config.method).toUpperCase(), path: config.url || '', body: sent });
+      const response = {
+        data: JSON.stringify(answer.body), status: answer.status, statusText: '', headers: { 'content-type': 'application/json' }, config, request: {},
+      };
+      if (answer.status >= 200 && answer.status < 300) return response;
+      const code = answer.status >= 500 ? AxiosError.ERR_BAD_RESPONSE : AxiosError.ERR_BAD_REQUEST;
+      throw new AxiosError(`Request failed with status code ${answer.status}`, code, config, response.request, response);
+    };
+    this.client.defaults.adapter = adapter;
   }
 
   /**

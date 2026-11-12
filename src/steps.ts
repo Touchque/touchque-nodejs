@@ -80,7 +80,10 @@ export interface StartOptions {
   /** End user's IP / user agent (location and device shown on the phone). */
   ip?: string;
   userAgent?: string;
-  /** Show an enrollment QR when the user has not linked a phone yet (default true). */
+  /**
+   * Show an enrollment QR when the user has not linked a phone yet (default true).
+   * With false such a user gets `{ state: 'enroll', reason: 'enrollment_off' }`: no QR.
+   */
   enroll?: boolean;
   /**
    * Silent sign-ins: the browser's device-bound key proof (`X-Touchque-Browser`),
@@ -168,7 +171,8 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
     const data = err.data as { retryAfter?: number; reason?: string; error?: string };
     const why = err.caseCode ? { caseCode: err.caseCode } : {};
     if (err.status === 404 && (code === 'device_not_linked' || /linked device/i.test(err.message))) {
-      if (opts.enroll === false) return { state: 'enroll' };
+      // No QR may be shown here: say why, so a page stops instead of polling a step it cannot finish.
+      if (opts.enroll === false) return { state: 'enroll', reason: 'enrollment_off' };
       return enrollStep(r, opts.user);
     }
     if (err.status === 423) return { state: 'frozen', retryAfter: data.retryAfter, ...why };
@@ -224,15 +228,16 @@ async function enrollStep(r: Resources, user: string): Promise<Step> {
 
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 
+/** An ISO 8601 time that parses. */
+const isIsoTime = (value: unknown): value is string => typeof value === 'string' && ISO_TIME.test(value) && Number.isFinite(Date.parse(value));
+
 /**
  * When a first-time QR stops working: the API's `expiresAt` when it is an ISO 8601
  * time, else now + `ttlMs` when that is positive, else nothing. The guard keeps a QR
  * with an expiry on screen while the page polls (see runGuard).
  */
 function qrExpiry(res: { expiresAt?: unknown; ttlMs?: unknown }): { expiresAt?: string } {
-  if (typeof res.expiresAt === 'string' && ISO_TIME.test(res.expiresAt) && Number.isFinite(Date.parse(res.expiresAt))) {
-    return { expiresAt: res.expiresAt };
-  }
+  if (isIsoTime(res.expiresAt)) return { expiresAt: res.expiresAt };
   if (typeof res.ttlMs === 'number' && res.ttlMs > 0) {
     const at = new Date(Date.now() + res.ttlMs);
     if (Number.isFinite(at.getTime())) return { expiresAt: at.toISOString() };
@@ -240,12 +245,18 @@ function qrExpiry(res: { expiresAt?: unknown; ttlMs?: unknown }): { expiresAt?: 
   return {};
 }
 
-/** Current state of a started approval. */
+/**
+ * Current state of a started approval, with the request's live `expiresAt` when
+ * Touchque's answer has one (a request moved to a passkey during a call gets 180 s more).
+ */
 export async function check(r: Resources, requestId: string): Promise<Step> {
   const s = await r.login.status(requestId);
   const map: Record<string, StepState> = { PENDING: 'waiting', CONFIRMED: 'approved', REJECTED: 'rejected', EXPIRED: 'expired' };
   const state: StepState = s.status === 'PENDING' && s.requiresPasskey ? 'passkey_required' : map[s.status] || 'waiting';
-  return { state, requestId, ...(state === 'approved' && s.assurance ? { assurance: s.assurance } : {}) };
+  return {
+    state, requestId, ...(isIsoTime(s.expiresAt) && { expiresAt: s.expiresAt }),
+    ...(state === 'approved' && s.assurance ? { assurance: s.assurance } : {}),
+  };
 }
 
 export interface CompleteExpectations {
@@ -300,7 +311,8 @@ export interface GuardTokenClaims {
   n?: string; // matching number
   oc?: string; // offline challenge id
   cc?: string; // "Why?" case code, shown while waiting
-  ee?: number; // first-time QR: when it expires (ms); until then polls keep it on screen
+  ee?: number; // first-time QR: when it expires (ms); polls keep it on screen until 15 s before
+  rx?: number; // the request's expiry (ms): waiting / passkey_required polls answer it when Touchque's status has none
   exp: number; // ms
 }
 

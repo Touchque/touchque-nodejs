@@ -37,7 +37,7 @@
 import { Touchque } from './index';
 import { TouchqueRejectedError, TouchqueTimeoutError, TouchquePasskeyRequiredError, TouchqueAPIError } from './errors';
 import {
-  runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, refusalHeaders, SilentSignInOptions, GuardBody,
+  runGuard, guardInputFromHeaders, isStatusPoll, silentInputFromHeaders, guardResponse, SilentSignInOptions, GuardBody,
 } from './guard';
 import type { LoginRequestDetails } from './types';
 import { FixedWindowLimiter, RateLimitOptions } from './rateLimiter';
@@ -167,10 +167,10 @@ function relayError(error: unknown): Response {
   return json({ error: 'relay_error' }, 502);
 }
 
-/** The guard's answer while not approved: 202 with the step, or the refusal with its X-Touchque-State / -Reason. */
-function guardResponse(result: { status: number; body: GuardBody }): Response {
-  const retryAfter = result.body.touchque.retryAfter;
-  return json(result.body, result.status, { ...(retryAfter && { 'Retry-After': String(retryAfter) }), ...refusalHeaders(result) });
+/** The guard's answer while not approved, as the adapters send it: 202 with the step, or the refusal with its X-Touchque-State / -Reason. */
+async function guardAnswer(result: { status: number; body: GuardBody }): Promise<Response> {
+  const answer = await guardResponse(result);
+  return json(answer.body, answer.status, answer.headers);
 }
 
 /** The JSON body (application/json only, at most 100 KiB), or the 400/413 to answer. */
@@ -351,7 +351,7 @@ export function touchqueRelay(tq: Touchque, options: TouchqueRelayOptions): (req
       },
     } : input);
     if (overLimit) return overLimit;
-    if (!result.approved) return guardResponse(result);
+    if (!result.approved) return guardAnswer(result);
     const headers = new Headers();
     try {
       if (onAuthenticated) {
@@ -521,7 +521,7 @@ export function touchqueRelay(tq: Touchque, options: TouchqueRelayOptions): (req
         : limited(ip, 'passkey-enroll', userId);
       if (refused) return refused;
       const result = await runGuard(tq, input);
-      if (!result.approved) return guardResponse(result);
+      if (!result.approved) return guardAnswer(result);
       return json(await tq.webauthn.registerOptions({ externalUsername: userId, discoverable: true, approvalRequestId: result.approved.requestId }));
     } catch (error) {
       return relayError(error);

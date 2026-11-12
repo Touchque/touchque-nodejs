@@ -15,8 +15,9 @@ import { Touchque, getDefaultClient } from '../index';
 import type { LoginRequestDetails } from '../types';
 import {
   runGuard, guardInputFromHeaders, silentInputFromHeaders, SilentSignInOptions, GuardRefusal, GuardResult,
-  adapterClient, withoutClient, answerBody, refusalHeaders,
+  adapterClient, withoutClient, respond,
 } from '../guard';
+import { logOf } from '../internal';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -136,20 +137,16 @@ export function requireTouchque(
         next();
         return;
       }
-      if (result.status === 429 || result.status === 423) {
-        const retry = result.body.touchque.retryAfter;
-        if (retry) res.set('Retry-After', String(retry));
-      }
-      res.set('Cache-Control', 'no-store');
-      res.set(refusalHeaders(result));
-      const body = await answerBody(result, options.errorBody, client, req.app?.get('json replacer'));
-      if (body === result.body) {
-        res.status(result.status).json(body);
+      // What guardResponse() gives, judged with the app's own JSON replacer.
+      const answer = await respond(result, options.errorBody, logOf(client), req.app?.get('json replacer'));
+      res.set(answer.headers);
+      if (answer.body === result.body) {
+        res.status(answer.status).json(answer.body);
         return;
       }
       // errorBody's shape went through the app's JSON replacer already: sent without a second pass.
-      res.status(result.status).type('application/json')
-        .send(jsonText(body, req.app?.get('json spaces'), req.app?.get('json escape')));
+      res.status(answer.status).type('application/json')
+        .send(jsonText(answer.body, req.app?.get('json spaces'), req.app?.get('json escape')));
     } catch (err) {
       next(err);
     }

@@ -516,6 +516,11 @@ export interface LoginStatusResponse {
    */
   requiresPasskey?: boolean;
   /**
+   * When the request expires (ISO 8601), as it is now: a request moved to a
+   * passkey during a call gets 180 s more for the ceremony.
+   */
+  expiresAt?: string;
+  /**
    * Vishing Shield: approved on the phone during a call. Still CONFIRMED;
    * the user's critical actions are refused (`blocked` / `provisional`) until
    * the phone re-confirms it after the call (`reconfirmedAt`) or the user

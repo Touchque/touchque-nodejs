@@ -113,8 +113,7 @@ describe('touchqueRouter — classic login (two-phase)', () => {
   test('pre-auth POST /login never hands an unlinked user a linking QR or recovery codes', async () => {
     const res = await request(realApp()).post('/touchque/login').send({ externalUsername: 'new@example.com' });
     expect(res.status).toBe(202);
-    expect(res.body.touchque.state).toBe('enroll');
-    expect(res.body.touchque.enroll).toBeUndefined();
+    expect(res.body.touchque).toEqual({ state: 'enroll', reason: 'enrollment_off' });
     expect(api.calls.some((c) => c.path === '/auth/generate-secret')).toBe(false);
   });
 
@@ -580,6 +579,13 @@ describe('touchqueRouter — adding a passkey', () => {
     expect(done.body.challenge).toBe('reg-challenge');
     const again = await request(app).post('/touchque/passkey/register/options').set('X-Touchque-Token', first.body.token).send({});
     expect(again.status).not.toBe(200);
+  });
+
+  test('a token for a user with no phone: enrollment_off, never a linking QR', async () => {
+    const res = await request(appWithRouter(api.client)).post('/touchque/passkey/register/options').set('X-Touchque-Token', 'stale').send({});
+    expect(res.status).toBe(202);
+    expect(res.body.touchque).toEqual({ state: 'enroll', reason: 'enrollment_off' });
+    expect(api.calls.some((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset')).toBe(false);
   });
 
   test('a rejected approval gives no options', async () => {

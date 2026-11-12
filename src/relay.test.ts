@@ -126,8 +126,7 @@ describe('touchqueRelay — classic login (two-phase)', () => {
     expect(rej.status).toBe(403);
     expect((await rej.json()).touchque.state).toBe('rejected');
     const fresh = await (await post(relay, '/login', { externalUsername: 'new@example.com' })).json();
-    expect(fresh.touchque.state).toBe('enroll');
-    expect(fresh.touchque.enroll).toBeUndefined();
+    expect(fresh.touchque).toEqual({ state: 'enroll', reason: 'enrollment_off' });
     expect(api.calls.some((c) => c.path === '/auth/generate-secret')).toBe(false);
   });
 
@@ -354,6 +353,14 @@ describe('touchqueRelay — passkeys', () => {
     const done = await post(relay, '/passkey/register/options', {}, { 'X-Touchque-Token': step.token });
     expect((await done.json()).challenge).toBe('reg-challenge');
     expect((await post(relay, '/passkey/register/options', {}, { 'X-Touchque-Token': step.token })).status).not.toBe(200);
+  });
+
+  test('adding a passkey with a token for a user with no phone: enrollment_off, never a linking QR', async () => {
+    const relay = relayFor(api.client, { getUserId: () => 'new@example.com' });
+    const res = await post(relay, '/passkey/register/options', {}, { 'X-Touchque-Token': 'stale' });
+    expect(res.status).toBe(202);
+    expect((await res.json()).touchque).toEqual({ state: 'enroll', reason: 'enrollment_off' });
+    expect(api.calls.some((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset')).toBe(false);
   });
 
   test('credentials: 401 without a user; DELETE passes the decoded id', async () => {

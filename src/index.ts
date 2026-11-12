@@ -228,7 +228,9 @@ export { requireTouchque, TouchqueMiddlewareOptions } from './middleware/express
 export { withTouchque, WithTouchqueOptions, forwardedFor, ipFromVercel, ipFromCloudflare } from './next';
 export { createTouchqueLogin } from './nextLogin';
 export type { NextSession, TouchqueNextOptions, CookieSource } from './nextLogin';
-export { runGuard, GUARD_HEADERS, GuardInput, GuardResult, GuardBody, GuardRefusal, SilentSignInOptions } from './guard';
+export {
+  runGuard, guardResponse, GUARD_HEADERS, GuardInput, GuardResult, GuardBody, GuardRefusal, GuardResponse, GuardResponseOptions, SilentSignInOptions,
+} from './guard';
 export { signGuardToken, verifyGuardToken, normalizeDetails } from './steps';
 export { touchqueRouter, TouchqueRouterOptions } from './router';
 // The same relay routes for Next.js (App Router) and other Fetch-API runtimes: Request in, Response out.
@@ -288,14 +290,36 @@ export type {
   ListRecoveriesOptions,
 } from './types';
 
-import { resources as internalResources } from './internal';
+import { resources as internalResources, TESTING_HOOKS, type TestingHooks } from './internal';
 function httpOf(client: Touchque): HttpClient {
   return internalResources(client).http;
 }
 
 let defaultClient: Touchque | undefined;
-/** The client built from TQ_API_KEY / TQ_API_SECRET, created on first use. */
+/**
+ * The client built from TQ_API_KEY / TQ_API_SECRET, created on first use: what
+ * the adapters and `runGuard(null, …)` use when given no client. Call it at
+ * startup to fail fast: it throws a `TouchqueConfigError` that names the problem.
+ */
 export function getDefaultClient(): Touchque {
   if (!defaultClient) defaultClient = new Touchque();
   return defaultClient;
 }
+
+/**
+ * Replaces the default client, e.g. with one that has your logger:
+ * `setDefaultClient(new Touchque({ logger: console }))`. null or undefined
+ * forgets it, so the next `getDefaultClient()` builds one from the environment
+ * again. Returns the client it replaced.
+ */
+export function setDefaultClient(client?: Touchque | null): Touchque | undefined {
+  const replaced = defaultClient;
+  defaultClient = client ?? undefined;
+  return replaced;
+}
+
+// For @touchque/node/testing only (see TestingHooks): reached through a registered symbol, not exported.
+const testingHooks: TestingHooks = {
+  useTransport: (client, transport) => internalResources(client).http.useTransport(transport),
+};
+Object.defineProperty(Touchque, TESTING_HOOKS, { value: testingHooks });
