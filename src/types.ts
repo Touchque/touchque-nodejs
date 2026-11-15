@@ -622,9 +622,9 @@ export interface RiskReason {
    * `new_country`, `new_network`, `network_unknown`, `hosting_network`,
    * `critical_action`, `sensitive_action`, `risk_signal`, `push_fatigue`,
    * `fraud_report`, `new_factor`, `vishing_shield`, `checks_incomplete`,
-   * `silent_mode_shadow`, `phone_not_linked`, `frozen`, … New codes are added
-   * in minor versions. `action`: one of your Touchque Actions asked
-   * (`text` is its reason, `action` its slug).
+   * `silent_mode_shadow`, `phone_not_linked`, `frozen`, `automated_client`,
+   * … New codes are added in minor versions. `action`: one of your Touchque
+   * Actions asked (`text` is its reason, `action` its slug).
    */
   code: string;
   /** English text. */

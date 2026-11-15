@@ -123,12 +123,15 @@ second call.
 
 ## Framework adapters
 
-- **Express**: `requireTouchque(action, options?)` — shown above.
-- **Next.js / Fetch API route handlers**: `withTouchque(action, options?)`. It sends no end-user
-  address unless you say where it comes from: `ip: ipFromVercel` (Vercel), `ip: ipFromCloudflare`
-  (only when your origin accepts Cloudflare traffic only), `trustedProxyHops: 1` (one proxy of yours
-  in front), or your own function. Never the leftmost `X-Forwarded-For` hop: the client controls it.
-  Without an address the risk checks that need one (Tor, location, travel) are skipped.
+- **Express**: `requireTouchque(action, options?)` — shown above; `options.user` defaults to
+  `req.user` (its `email`, `id` or `username`).
+- **Next.js / Fetch API route handlers**: `withTouchque(action, handler, options)`; `handler` runs only after the approval,
+  and `options.user` (who approves, read from your session) is required:
+  `export const POST = withTouchque('SEND_MONEY', async (req, { touchque }) => Response.json({ ok: true }), { user: async () => (await auth())?.user?.email })`.
+  It sends no end-user address unless you say where it comes from: `ip: ipFromVercel` (Vercel),
+  `ip: ipFromCloudflare` (only when your origin accepts Cloudflare traffic only), `trustedProxyHops: 1`
+  (one proxy of yours in front), or your own function. Never the leftmost `X-Forwarded-For` hop: the
+  client controls it. Without an address the risk checks that need one (Tor, location, travel) are skipped.
 - **`touchqueRouter`**: mounts every relay route a frontend needs
   (`POST /login`, enrollment, passkey ceremonies, offline codes) so you don't
   hand-write them. `POST /passkey/authenticate/options` with no `email` answers options for any passkey of
@@ -537,11 +540,38 @@ import { requestIdJag, redeemIdJag, IdJagVerifier, verifyAgentCard } from '@touc
 const { assertion } = await requestIdJag({ issuer: 'https://sso.touchque.com', clientId, clientSecret, idToken, audience: 'https://auth.files.example' });
 const tokens = await redeemIdJag({ tokenEndpoint: 'https://auth.files.example/token', clientId: 'acme', clientSecret: filesSecret, assertion });
 
-// Your own authorization server (jwt-bearer grant):
+// Your own authorization server (jwt-bearer grant). Build the verifier once, not per request:
+// its used-once jti store and key cache live in it.
 const idJag = new IdJagVerifier({ issuer: 'https://sso.touchque.com', audience: 'https://auth.files.example' });
 const claims = await idJag.verify(form.assertion, { clientId: authenticatedClientId });
 
 await verifyAgentCard(card, { cardUrl: 'https://agent.example/.well-known/agent-card.json' });
+```
+
+DPoP binding (optional, RFC 9449): pass a key from `createIdJagDpopKey()` as `dpopKey` to `requestIdJag` and `redeemIdJag`; each sends a fresh proof to its token endpoint (`idJagDpopProof(key, url)` makes one), and the identity provider binds the ID-JAG to that key (`cnf.jkt`). `dpopBound` says whether the returned ID-JAG carries the key's thumbprint (`false`: the identity provider ignored the proof). A token endpoint that asks for a nonce (400 or 401 `use_dpop_nonce` with a `DPoP-Nonce` header, RFC 9449 §8) gets the same request once more, with a new proof that carries it, when the header is one valid nonce (printable ASCII without space, `"` or `\`); otherwise the refusal is thrown as it is. `IdJagError.dpopNonce` is the latest valid `DPoP-Nonce` the server sent during the call, for a retry by hand. A token endpoint that cannot be reached or read throws an `IdJagError` `temporarily_unavailable`.
+
+An access token the authorization server bound to the key (`token_type: 'DPoP'`) goes to the resource as `Authorization: DPoP <token>` with a `DPoP` proof for that request's method and URL and the token: `idJagDpopProof(key, url, { method, accessToken })` (`accessToken` adds its hash, `ath`; `nonce` adds a server's nonce). The method is trimmed and uppercased (empty means POST; anything but RFC 9110 token characters throws a `TouchqueConfigError`). `htu` is the URL with scheme and host lowercased, the default port dropped, `/` for an empty path, the path kept as given (as `fetch` sends it: `new URL()` resolves `.` and `..` segments and percent-encodes characters such as spaces), and no query or fragment. The proof's `jwk` is the key's `kty`, `crv`, `x` and `y`, nothing else.
+
+An authorization server that accepts Touchque ID-JAGs, yours or another company's, must verify the DPoP proof itself (`typ`, signature with the `jwk` in it, `htm`, `htu`, `iat`, each `jti` once) and check `cnf.jkt`: refuse a bound ID-JAG unless the proof key's thumbprint matches. `IdJagVerifier` does the `cnf.jkt` part when given that thumbprint as `dpopJkt` (refusing before the ID-JAG's jti is used up) and returns it as `claims.cnfJkt`.
+
+The example below continues the one above (it uses that block's imports and `idJag`, and declares no name twice), so the two paste into one file:
+
+```ts
+import { createIdJagDpopKey, idJagDpopProof, jwkThumbprint } from '@touchque/node';
+
+// The same two calls with a key that stays in this process:
+const dpopKey = createIdJagDpopKey();
+const { assertion: dpopAssertion, dpopBound } = await requestIdJag({ issuer: 'https://sso.touchque.com', clientId, clientSecret, idToken, audience: 'https://auth.files.example', dpopKey });
+const dpopTokens = await redeemIdJag({ tokenEndpoint: 'https://auth.files.example/token', clientId: 'acme', clientSecret: filesSecret, assertion: dpopAssertion, dpopKey });
+
+// A request to the resource with the DPoP-bound access token:
+const accessToken = dpopTokens.access_token as string;
+const url = 'https://api.files.example/v1/files';
+const files = await fetch(url, { headers: { Authorization: `DPoP ${accessToken}`, DPoP: idJagDpopProof(dpopKey, url, { method: 'GET', accessToken }) } });
+
+// Your authorization server (idJag as above), after verifying the request's DPoP proof
+// (proofJwk: the jwk in its header; jwkThumbprint takes P-256 and Ed25519 keys):
+const { cnfJkt } = await idJag.verify(form.assertion, { clientId: authenticatedClientId, dpopJkt: jwkThumbprint(proofJwk) });
 ```
 
 ## Shared Signals (security events from Touchque SSO)

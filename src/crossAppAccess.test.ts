@@ -4,9 +4,10 @@
 // RFC 8785 form verifies with keys from its own host and fails when changed or pointed elsewhere.
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, createPublicKey, verify as verifySig, createHash } from 'node:crypto';
+import { createServer, type Server } from 'node:http';
 import { resolve } from 'node:path';
-import { IdJagVerifier, IdJagError, requestIdJag, redeemIdJag, verifyAgentCard, signAgentCard, canonicalJson, AgentCardError } from './index';
+import { IdJagVerifier, IdJagError, requestIdJag, redeemIdJag, createIdJagDpopKey, idJagDpopProof, verifyAgentCard, signAgentCard, canonicalJson, AgentCardError, TouchqueConfigError } from './index';
 
 let fake: ChildProcess;
 let base = '';
@@ -51,6 +52,458 @@ describe('Cross App Access (ID-JAG)', () => {
     const forged = (await mint({})).split('.');
     forged[1] = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(forged[1], 'base64url').toString()), sub: 'mallory' })).toString('base64url');
     expect(await reason(verifier.verify(forged.join('.'), { clientId: 'acme-at-rs' }))).toBe('signature does not verify');
+  });
+
+  test('DPoP: requestIdJag and redeemIdJag send a proof for each endpoint; a bound ID-JAG needs the same key at the verifier', async () => {
+    // An identity provider and an authorization server that check the proof and bind to its key.
+    const seen: Array<{ path: string; header: any; payload: any; jkt: string }> = [];
+    const thumb = (jwk: any) => createHash('sha256').update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })).digest('base64url');
+    const srv: Server = createServer((req, res) => {
+      const proof = String(req.headers.dpop || '');
+      const [h, p, sig] = proof.split('.');
+      const header = JSON.parse(Buffer.from(h, 'base64url').toString());
+      const payload = JSON.parse(Buffer.from(p, 'base64url').toString());
+      const ok = verifySig('sha256', Buffer.from(`${h}.${p}`), { key: createPublicKey({ key: header.jwk, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, Buffer.from(sig, 'base64url'));
+      seen.push({ path: req.url || '', header, payload, jkt: thumb(header.jwk) });
+      res.setHeader('Content-Type', 'application/json');
+      if (!ok) { res.statusCode = 400; return res.end(JSON.stringify({ error: 'invalid_dpop_proof' })); }
+      const jag = `${Buffer.from('{"typ":"oauth-id-jag+jwt","alg":"RS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({ cnf: { jkt: thumb(header.jwk) } })).toString('base64url')}.sig`;
+      res.end(JSON.stringify(req.url === '/idp/token?x=1'
+        ? { access_token: jag, issued_token_type: 'urn:ietf:params:oauth:token-type:id-jag', token_type: 'N_A' }
+        : { access_token: 'at', token_type: 'DPoP' }));
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const local = `http://127.0.0.1:${(srv.address() as any).port}`;
+    try {
+      const key = createIdJagDpopKey();
+      const got = await requestIdJag({ tokenEndpoint: `${local}/idp/token?x=1`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey: key });
+      expect(got.dpopBound).toBe(true);
+      expect(await redeemIdJag({ tokenEndpoint: `${local}/rs/token`, clientId: 'acme-at-rs', assertion: got.assertion, dpopKey: key })).toMatchObject({ token_type: 'DPoP' });
+      expect(seen).toHaveLength(2);
+      expect(seen[0]).toMatchObject({ header: { typ: 'dpop+jwt', alg: 'ES256' }, payload: { htm: 'POST', htu: `${local}/idp/token` }, jkt: key.thumbprint });
+      expect(seen[0].header.jwk.d).toBeUndefined();
+      expect(seen[1]).toMatchObject({ payload: { htm: 'POST', htu: `${local}/rs/token` }, jkt: key.thumbprint });
+      expect(seen[0].payload.jti).not.toBe(seen[1].payload.jti);
+    } finally {
+      srv.close();
+    }
+    // An identity provider that ignores DPoP answers with a bearer ID-JAG: dpopBound false.
+    expect((await requestIdJag({ issuer: `${base}/idp`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey: createIdJagDpopKey() })).dpopBound).toBe(false);
+
+    // The verifier: a bound ID-JAG needs the proof key's thumbprint, refused before it is used up.
+    const verifier = new IdJagVerifier({ issuer: `${base}/idp`, audience: 'https://rs.example' });
+    const bound = (await post('/__test/id-jag', { claims: { cnf: { jkt: 'right-key-thumbprint' } } })).assertion as string;
+    await expect(verifier.verify(bound, { clientId: 'acme-at-rs' })).rejects.toThrow('bound to a DPoP key: a DPoP proof with that key is required');
+    await expect(verifier.verify(bound, { clientId: 'acme-at-rs', dpopJkt: 'other-key' })).rejects.toThrow('the DPoP proof was made with another key');
+    expect(await verifier.verify(bound, { clientId: 'acme-at-rs', dpopJkt: 'right-key-thumbprint' })).toMatchObject({ sub: expect.any(String), cnfJkt: 'right-key-thumbprint' });
+    const odd = (await post('/__test/id-jag', { claims: { cnf: { x5t: 'abc' } } })).assertion as string;
+    await expect(verifier.verify(odd, { clientId: 'acme-at-rs', dpopJkt: 'x' })).rejects.toThrow('unsupported confirmation method');
+    // Unbound: as before, with or without a proof key.
+    const plain = (await post('/__test/id-jag', { claims: {} })).assertion as string;
+    expect((await verifier.verify(plain, { clientId: 'acme-at-rs', dpopJkt: 'any' })).cnfJkt).toBeUndefined();
+  });
+});
+
+// A proof's header and payload, and whether its raw r||s signature verifies with the jwk in it.
+const readProof = (proof: string) => {
+  const [h, p, s] = proof.split('.');
+  const header = JSON.parse(Buffer.from(h, 'base64url').toString());
+  const sig = Buffer.from(s, 'base64url');
+  const verifies = sig.length === 64 && verifySig('sha256', Buffer.from(`${h}.${p}`), { key: createPublicKey({ key: header.jwk, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, sig);
+  return { header, payload: JSON.parse(Buffer.from(p, 'base64url').toString()), verifies };
+};
+
+describe('idJagDpopProof', () => {
+  test('a POST by default; method, access token (ath) and nonce when given', () => {
+    const key = createIdJagDpopKey();
+    const before = Math.floor(Date.now() / 1000);
+    const forToken = readProof(idJagDpopProof(key, 'https://sso.touchque.com/sso/token?x=1#f'));
+    expect(forToken.header).toEqual({ typ: 'dpop+jwt', alg: 'ES256', jwk: { kty: 'EC', crv: 'P-256', x: key.publicJwk.x, y: key.publicJwk.y } });
+    expect([forToken.header.jwk.x.length, forToken.header.jwk.y.length]).toEqual([43, 43]);
+    expect(Object.keys(forToken.payload).sort()).toEqual(['htm', 'htu', 'iat', 'jti']);
+    expect(forToken.payload).toMatchObject({ htm: 'POST', htu: 'https://sso.touchque.com/sso/token' });
+    expect(Number.isInteger(forToken.payload.iat) && forToken.payload.iat >= before && forToken.payload.iat <= Math.floor(Date.now() / 1000)).toBe(true);
+    expect(forToken.verifies).toBe(true);
+
+    const accessToken = `at-${Math.random().toString(36).slice(2)}`;
+    const forResource = readProof(idJagDpopProof(key, 'https://API.Example.com:443/v1/files?x=1', { method: 'get', accessToken, nonce: 'n-1' }));
+    expect(forResource.payload).toMatchObject({ htm: 'GET', htu: 'https://api.example.com/v1/files', nonce: 'n-1', ath: createHash('sha256').update(accessToken, 'ascii').digest('base64url') });
+    expect(forResource.payload.ath).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(forResource.payload.jti).not.toBe(forToken.payload.jti);
+    expect(forResource.verifies).toBe(true);
+    // Only what is given: a method alone adds no ath or nonce; no options is a POST.
+    expect(readProof(idJagDpopProof(key, 'https://api.example.com/v1/files', { method: 'delete' })).payload).not.toHaveProperty('ath');
+    expect(readProof(idJagDpopProof(key, 'https://api.example.com/v1/files', { method: 'delete' })).payload).toMatchObject({ htm: 'DELETE' });
+    expect(readProof(idJagDpopProof(key, 'https://auth.example/token', {})).payload).toMatchObject({ htm: 'POST' });
+    expect(readProof(idJagDpopProof(key, 'https://auth.example/token', { nonce: 'n-2' })).payload).toMatchObject({ htm: 'POST', nonce: 'n-2' });
+  });
+
+  test('htu: scheme and host lowercased, default port dropped, "/" for an empty path, the path kept as given, no query or fragment', async () => {
+    const key = createIdJagDpopKey();
+    const htu = (url: string) => readProof(idJagDpopProof(key, url)).payload.htu;
+    expect(htu('https://sso.touchque.com/sso/token?x=1#f')).toBe('https://sso.touchque.com/sso/token');
+    expect(htu('HTTPS://API.Example.COM:443/v1/files?x=1')).toBe('https://api.example.com/v1/files');
+    expect(htu('http://localhost:80/token')).toBe('http://localhost/token');
+    expect(htu('https://auth.example:8443/token')).toBe('https://auth.example:8443/token');
+    expect(htu('https://auth.example')).toBe('https://auth.example/');
+    expect(htu('https://auth.example?x=1#f')).toBe('https://auth.example/');
+    expect(htu('https://auth.example/a%2Fb/%7euser/Caf%C3%A9/A?q=1')).toBe('https://auth.example/a%2Fb/%7euser/Caf%C3%A9/A');
+    expect(htu('https://user:secret@auth.example/token')).toBe('https://auth.example/token');
+    expect(htu('https://[::1]:8443/token')).toBe('https://[::1]:8443/token');
+    // What new URL() changes in a path ("." and ".." segments, a space) fetch changes too: htu is the path fetch sends.
+    expect(htu('https://auth.example/v1/./a/../Files x/%7e')).toBe('https://auth.example/v1/Files%20x/%7e');
+    const paths: string[] = [];
+    const srv: Server = createServer((req, res) => { paths.push(req.url || ''); res.end(); });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    try {
+      const url = `http://127.0.0.1:${(srv.address() as any).port}/v1/./a/../Files x/%7e?q=1#f`;
+      await fetch(url);
+      expect(htu(url)).toBe(`http://127.0.0.1:${(srv.address() as any).port}${paths[0].split('?')[0]}`);
+    } finally {
+      srv.close();
+    }
+  });
+
+  test('method: trimmed and uppercased, blank means POST; anything but RFC 9110 token characters is a TouchqueConfigError', () => {
+    const key = createIdJagDpopKey();
+    const htm = (method?: string) => readProof(idJagDpopProof(key, 'https://api.example.com/v1/files', { method })).payload.htm;
+    expect([htm(' get '), htm('\tpatch\n'), htm('m-search'), htm("!#$%&'*+-.^_`|~09az")]).toEqual(['GET', 'PATCH', 'M-SEARCH', "!#$%&'*+-.^_`|~09AZ"]);
+    expect([htm(''), htm('   '), htm(undefined), htm(null as unknown as string)]).toEqual(['POST', 'POST', 'POST', 'POST']);
+    // Checked before uppercasing: ß would become SS.
+    for (const method of ['GE T', 'GET\r\nX-Y: 1', 'G"ET', 'GET,POST', '(GET)', 'GET/1', 'G\\ET', 'GÉT', 'poßt', 'get\u00a0x', 'get\u0000']) {
+      expect(() => idJagDpopProof(key, 'https://api.example.com/v1/files', { method })).toThrow(TouchqueConfigError);
+    }
+  });
+
+  test('the header jwk is rebuilt from the key: kty, crv, x and y, never d or other members', () => {
+    // A key made by hand whose publicJwk is the private JWK with more members.
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const full = privateKey.export({ format: 'jwk' });
+    expect(full.d).toEqual(expect.any(String));
+    const key = { privateKey, publicJwk: { ...full, kid: 'k1', alg: 'ES256', use: 'sig', key_ops: ['sign'], ext: true }, thumbprint: 'unused' };
+    for (const proof of [idJagDpopProof(key, 'https://auth.example/token'), idJagDpopProof(key, 'https://api.example.com/v1/files', { method: 'GET', accessToken: 'at', nonce: 'n-1' })]) {
+      const { header, verifies } = readProof(proof);
+      expect(Object.keys(header.jwk)).toEqual(['kty', 'crv', 'x', 'y']);
+      expect(header.jwk).toEqual({ kty: 'EC', crv: 'P-256', x: full.x, y: full.y });
+      expect(verifies).toBe(true);
+    }
+  });
+});
+
+describe('DPoP nonce (RFC 9449 section 8) at the token endpoint', () => {
+  type Seen = { url: string; body: string; authorization?: string; proof?: ReturnType<typeof readProof> };
+  // A header given as a list is sent once per value; null drops the connection without an answer.
+  type Reply = { status: number; headers?: Record<string, string | string[]>; body?: unknown };
+  // A token endpoint that records each request and answers what `reply` says for the nth one.
+  const tokenEndpoint = async (reply: (n: number, seen: Seen) => Reply | null) => {
+    const seen: Seen[] = [];
+    const srv: Server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        const got: Seen = { url: req.url || '', body, authorization: req.headers.authorization, ...(req.headers.dpop && { proof: readProof(String(req.headers.dpop)) }) };
+        seen.push(got);
+        const answer = reply(seen.length, got);
+        if (!answer) return req.socket.destroy();
+        res.writeHead(answer.status, { 'Content-Type': 'application/json', ...answer.headers });
+        res.end(answer.body === undefined ? '' : JSON.stringify(answer.body));
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    return { seen, url: `http://127.0.0.1:${(srv.address() as any).port}`, close: () => new Promise<void>((r) => srv.close(() => r())) };
+  };
+  const askNonce = (nonce: string): Reply => ({ status: 400, headers: { 'DPoP-Nonce': nonce }, body: { error: 'use_dpop_nonce', error_description: 'Authorization server requires nonce in DPoP proof' } });
+  // An ID-JAG bound to the key of the request's proof.
+  const jagFor = (got: Seen) => {
+    const jwk = got.proof?.header.jwk;
+    const jkt = createHash('sha256').update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })).digest('base64url');
+    return `${Buffer.from('{"typ":"oauth-id-jag+jwt","alg":"RS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({ cnf: { jkt } })).toString('base64url')}.sig`;
+  };
+  const reason = (p: Promise<unknown>) => p.then(() => 'accepted', (e: IdJagError) => ({ name: e.name, code: e.code, status: e.status, dpopNonce: e.dpopNonce }));
+
+  test('requestIdJag and redeemIdJag send the same request once more, with a new proof that carries the nonce', async () => {
+    const ep = await tokenEndpoint((n, got) => {
+      if (got.proof?.payload.nonce !== 'n-1') return askNonce('n-1');
+      return { status: 200, body: got.url.startsWith('/idp/') ? { access_token: jagFor(got), issued_token_type: 'urn:ietf:params:oauth:token-type:id-jag', token_type: 'N_A' } : { access_token: 'at', token_type: 'DPoP' } };
+    });
+    try {
+      const key = createIdJagDpopKey();
+      const got = await requestIdJag({ tokenEndpoint: `${ep.url}/idp/token`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey: key });
+      expect(got.dpopBound).toBe(true);
+      expect(await redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', clientSecret: 'rs_secret', assertion: got.assertion, dpopKey: key })).toMatchObject({ token_type: 'DPoP' });
+      expect(await redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: got.assertion, dpopKey: key })).toMatchObject({ token_type: 'DPoP' });
+      expect(ep.seen).toHaveLength(6);
+      for (const [first, retry] of [[ep.seen[0], ep.seen[1]], [ep.seen[2], ep.seen[3]], [ep.seen[4], ep.seen[5]]]) {
+        expect(retry.url).toBe(first.url);
+        expect(retry.body).toBe(first.body);
+        expect(retry.authorization).toBe(first.authorization);
+        expect(first.proof!.payload).not.toHaveProperty('nonce');
+        expect(retry.proof!.payload).toMatchObject({ htm: 'POST', htu: `${ep.url}${first.url}`, nonce: 'n-1' });
+        expect(retry.proof!.payload.jti).not.toBe(first.proof!.payload.jti);
+        expect(Number.isInteger(retry.proof!.payload.iat) && retry.proof!.payload.iat >= first.proof!.payload.iat).toBe(true);
+        expect(retry.proof!.verifies && first.proof!.verifies).toBe(true);
+        expect(retry.proof!.header.jwk).toEqual(key.publicJwk);
+      }
+      expect(ep.seen[0].authorization).toMatch(/^Basic /);
+      expect(ep.seen[2].authorization).toMatch(/^Basic /);
+      expect(ep.seen[4].authorization).toBeUndefined();
+      expect(new URLSearchParams(ep.seen[5].body).get('client_id')).toBe('acme-at-rs');
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('a 401 that asks only in its DPoP challenge (WWW-Authenticate) is retried too', async () => {
+    const ep = await tokenEndpoint((n, got) => (got.proof?.payload.nonce === 'n-2'
+      ? { status: 200, body: { access_token: 'at', token_type: 'DPoP' } }
+      : { status: 401, headers: { 'WWW-Authenticate': 'DPoP algs="ES256", error="use_dpop_nonce", error_description="Authorization server requires nonce in DPoP proof"', 'DPoP-Nonce': 'n-2' } }));
+    try {
+      expect(await redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: createIdJagDpopKey() })).toMatchObject({ token_type: 'DPoP' });
+      expect(ep.seen.map((s) => s.proof?.payload.nonce)).toEqual([undefined, 'n-2']);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('WWW-Authenticate is read as RFC 9110 challenges: only the DPoP challenge\'s own error parameter asks', async () => {
+    const cases: Array<[string | string[], boolean]> = [
+      ['Bearer error="use_dpop_nonce", DPoP algs="ES256"', false],
+      ['DPoP error="invalid_token", error_description="send error=use_dpop_nonce"', false],
+      ['DPoP error_description="a, error=use_dpop_nonce"', false],
+      ['DPoP error="USE_DPOP_NONCE"', false],
+      ['Basic realm="a, b", DPoP algs="ES256", error=use_dpop_nonce', true],
+      ['Bearer realm="x",, dpop ERROR = "use_dpop_nonce"', true],
+      ['DPoP error="use\\_dpop_nonce"', true],
+      [['Bearer realm="x"', 'DPoP error="use_dpop_nonce"'], true],
+    ];
+    let challenge: string | string[] = '';
+    const ep = await tokenEndpoint((n, got): Reply => (got.proof?.payload.nonce === 'n-1'
+      ? { status: 200, body: { access_token: 'at', token_type: 'DPoP' } }
+      : { status: 401, headers: { 'WWW-Authenticate': challenge, 'DPoP-Nonce': 'n-1' } }));
+    try {
+      for (const [value, asks] of cases) {
+        challenge = value;
+        const before = ep.seen.length;
+        const got = await reason(redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: createIdJagDpopKey() }));
+        expect([value, ep.seen.length - before, got]).toEqual([value, asks ? 2 : 1, asks ? 'accepted' : { name: 'IdJagError', code: 'server_error', status: 401, dpopNonce: 'n-1' }]);
+      }
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('never a second retry: asked again, it throws with the latest nonce', async () => {
+    const ep = await tokenEndpoint((n) => askNonce(`n-${n}`));
+    try {
+      const key = createIdJagDpopKey();
+      expect(await reason(redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: key })))
+        .toEqual({ name: 'IdJagError', code: 'use_dpop_nonce', status: 400, dpopNonce: 'n-2' });
+      expect(ep.seen.map((s) => s.proof?.payload.nonce)).toEqual([undefined, 'n-1']);
+      expect(await reason(requestIdJag({ tokenEndpoint: `${ep.url}/idp/token`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey: key })))
+        .toEqual({ name: 'IdJagError', code: 'use_dpop_nonce', status: 400, dpopNonce: 'n-4' });
+      expect(ep.seen).toHaveLength(4);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('without a key: no DPoP header and no retry, the nonce is on the error', async () => {
+    const ep = await tokenEndpoint(() => askNonce('n-1'));
+    try {
+      expect(await reason(requestIdJag({ tokenEndpoint: `${ep.url}/idp/token`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example' })))
+        .toEqual({ name: 'IdJagError', code: 'use_dpop_nonce', status: 400, dpopNonce: 'n-1' });
+      expect(await reason(redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag' })))
+        .toEqual({ name: 'IdJagError', code: 'use_dpop_nonce', status: 400, dpopNonce: 'n-1' });
+      expect(ep.seen).toHaveLength(2);
+      expect(ep.seen.map((s) => s.proof)).toEqual([undefined, undefined]);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('no retry for another refusal, another status or a missing DPoP-Nonce header', async () => {
+    const replies: Reply[] = [
+      { status: 400, body: { error: 'use_dpop_nonce' } },
+      { status: 400, headers: { 'DPoP-Nonce': 'n-9' }, body: { error: 'invalid_grant', error_description: 'expired' } },
+      { status: 401, headers: { 'WWW-Authenticate': 'Bearer error="invalid_token"', 'DPoP-Nonce': 'n-9' } },
+      { status: 403, headers: { 'DPoP-Nonce': 'n-9' }, body: { error: 'use_dpop_nonce' } },
+    ];
+    const ep = await tokenEndpoint((n) => replies[n - 1] || { status: 500, body: { error: 'unexpected_request' } });
+    try {
+      const key = createIdJagDpopKey();
+      const redeem = () => reason(redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: key }));
+      expect(await redeem()).toEqual({ name: 'IdJagError', code: 'use_dpop_nonce', status: 400, dpopNonce: undefined });
+      expect(await redeem()).toEqual({ name: 'IdJagError', code: 'invalid_grant', status: 400, dpopNonce: 'n-9' });
+      expect(await redeem()).toEqual({ name: 'IdJagError', code: 'server_error', status: 401, dpopNonce: 'n-9' });
+      expect(await redeem()).toEqual({ name: 'IdJagError', code: 'use_dpop_nonce', status: 403, dpopNonce: 'n-9' });
+      expect(ep.seen).toHaveLength(4);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('an answer that is JSON but not an object is an IdJagError, not a TypeError', async () => {
+    const replies: Reply[] = [
+      { status: 400, headers: { 'DPoP-Nonce': 'n-1' }, body: null },
+      { status: 401, body: ['use_dpop_nonce'] },
+      { status: 400, body: 'use_dpop_nonce' },
+      { status: 200, body: null },
+      { status: 200, body: null },
+      { status: 200, body: 'at' },
+      { status: 200, body: ['at'] },
+    ];
+    const ep = await tokenEndpoint((n) => replies[n - 1] || { status: 500, body: { error: 'unexpected_request' } });
+    try {
+      const key = createIdJagDpopKey();
+      const redeem = () => redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: key });
+      expect(await reason(redeem())).toEqual({ name: 'IdJagError', code: 'server_error', status: 400, dpopNonce: 'n-1' });
+      expect(await reason(redeem())).toEqual({ name: 'IdJagError', code: 'server_error', status: 401, dpopNonce: undefined });
+      expect(await reason(redeem())).toEqual({ name: 'IdJagError', code: 'server_error', status: 400, dpopNonce: undefined });
+      expect(await reason(requestIdJag({ tokenEndpoint: `${ep.url}/idp/token`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey: key })))
+        .toMatchObject({ name: 'IdJagError', code: 'invalid_response' });
+      // A 2xx that is not an object: {} from redeemIdJag (it used to hand back the null, string or array).
+      expect([await redeem(), await redeem(), await redeem()]).toEqual([{}, {}, {}]);
+      expect(ep.seen).toHaveLength(7);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('the error carries the latest valid DPoP-Nonce: the retry answer\'s, else the first answer\'s', async () => {
+    const replies: Reply[] = [
+      askNonce('n-1'), { status: 400, body: { error: 'invalid_dpop_proof' } },
+      askNonce('n-2'), { status: 400, headers: { 'DPoP-Nonce': 'not a nonce' }, body: { error: 'invalid_dpop_proof' } },
+      askNonce('n-3'), { status: 401, headers: { 'DPoP-Nonce': 'n-4' }, body: { error: 'invalid_client' } },
+      // requestIdJag: a 200 without an ID-JAG after the retry.
+      askNonce('n-5'), { status: 200, body: { token_type: 'N_A' } },
+    ];
+    const ep = await tokenEndpoint((n) => replies[n - 1] || { status: 500, body: { error: 'unexpected_request' } });
+    try {
+      const key = createIdJagDpopKey();
+      const redeem = () => reason(redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: key }));
+      expect(await redeem()).toEqual({ name: 'IdJagError', code: 'invalid_dpop_proof', status: 400, dpopNonce: 'n-1' });
+      expect(await redeem()).toEqual({ name: 'IdJagError', code: 'invalid_dpop_proof', status: 400, dpopNonce: 'n-2' });
+      expect(await redeem()).toEqual({ name: 'IdJagError', code: 'invalid_client', status: 401, dpopNonce: 'n-4' });
+      expect(await reason(requestIdJag({ tokenEndpoint: `${ep.url}/idp/token`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey: key })))
+        .toEqual({ name: 'IdJagError', code: 'invalid_response', status: undefined, dpopNonce: 'n-5' });
+      expect(ep.seen.map((s) => s.proof?.payload.nonce)).toEqual([undefined, 'n-1', undefined, 'n-2', undefined, 'n-3', undefined, 'n-5']);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('no retry, and no nonce on the error, unless DPoP-Nonce is one valid nonce (1*NQCHAR)', async () => {
+    // Empty, a space, a double quote, a backslash, a byte above ~, and the header twice (fetch reads "a, b").
+    const invalid: Array<string | string[]> = ['', 'n 1', 'n"1', 'n\\1', 'nö', ['n-1', 'n-2'], ['n-1', 'n-1']];
+    const ep = await tokenEndpoint((n): Reply => (n <= invalid.length
+      ? { status: 400, headers: { 'DPoP-Nonce': invalid[n - 1] }, body: { error: 'use_dpop_nonce' } }
+      : { status: 401, headers: { 'WWW-Authenticate': 'DPoP error="use_dpop_nonce"', 'DPoP-Nonce': 'n 9' } }));
+    try {
+      const key = createIdJagDpopKey();
+      for (let i = 0; i <= invalid.length; i++) {
+        expect(await reason(redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: key })))
+          .toEqual({ name: 'IdJagError', code: i < invalid.length ? 'use_dpop_nonce' : 'server_error', status: i < invalid.length ? 400 : 401, dpopNonce: undefined });
+      }
+      expect(ep.seen).toHaveLength(invalid.length + 1);
+    } finally {
+      await ep.close();
+    }
+    // Every NQCHAR (printable ASCII but space, " and \) is a valid nonce: retried with it.
+    const all = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) => String.fromCharCode(0x21 + i)).filter((c) => c !== '"' && c !== '\\').join('');
+    const ok = await tokenEndpoint((n, got) => (got.proof?.payload.nonce === all ? { status: 200, body: { access_token: 'at', token_type: 'DPoP' } } : askNonce(all)));
+    try {
+      expect(await redeemIdJag({ tokenEndpoint: `${ok.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: createIdJagDpopKey() })).toMatchObject({ token_type: 'DPoP' });
+      expect(ok.seen.map((s) => s.proof?.payload.nonce)).toEqual([undefined, all]);
+    } finally {
+      await ok.close();
+    }
+  });
+
+  test('a token endpoint that cannot be reached or read is an IdJagError temporarily_unavailable', async () => {
+    const gone: Server = createServer();
+    await new Promise<void>((r) => gone.listen(0, '127.0.0.1', () => r()));
+    const port = (gone.address() as any).port;
+    await new Promise<void>((r) => gone.close(() => r()));
+    const refused = await redeemIdJag({ tokenEndpoint: `http://127.0.0.1:${port}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag' }).catch((e) => e);
+    expect(refused).toBeInstanceOf(IdJagError);
+    expect(refused).toMatchObject({ code: 'temporarily_unavailable', status: undefined, dpopNonce: undefined });
+    expect(refused.cause).toBeInstanceOf(Error);
+    // The retry's connection dropped: the first answer's nonce stays on the error.
+    const ep = await tokenEndpoint((n) => (n === 1 ? askNonce('n-1') : null));
+    try {
+      expect(await reason(redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey: createIdJagDpopKey() })))
+        .toEqual({ name: 'IdJagError', code: 'temporarily_unavailable', status: undefined, dpopNonce: 'n-1' });
+      expect(ep.seen).toHaveLength(2);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('a 64 KB WWW-Authenticate or DPoP-Nonce: the normal result or an IdJagError, well under a second', async () => {
+    const quoted = `DPoP error_description="${'a'.repeat(65536)}"`;
+    const list = `DPoP ${'a,'.repeat(30000)}`;
+    const asking = `${quoted}, error="use_dpop_nonce"`; // the DPoP challenge's error after the long parameter
+    const longNonce = 'n'.repeat(65536);
+    const timed = async (call: () => Promise<unknown>) => {
+      const started = performance.now();
+      const result = await call().catch((e) => e);
+      return { result, ms: performance.now() - started };
+    };
+    const tokens = { access_token: 'at', token_type: 'Bearer' };
+    const jag = { access_token: 'h.p.s', issued_token_type: 'urn:ietf:params:oauth:token-type:id-jag', token_type: 'N_A' };
+    // As the server sent them: fetch itself (not this SDK) refuses headers over its limit, 16 KB by default.
+    const answers: Reply[] = [];
+    const ep = await tokenEndpoint(() => answers.shift() || { status: 500, body: { error: 'unexpected_request' } });
+    try {
+      for (const challenge of [quoted, list]) {
+        for (const withKey of [false, true]) {
+          answers.push(withKey ? { status: 401, headers: { 'WWW-Authenticate': challenge, 'DPoP-Nonce': 'n-1' } } : { status: 200, headers: { 'WWW-Authenticate': challenge }, body: tokens });
+          const { result, ms } = await timed(() => redeemIdJag({ tokenEndpoint: `${ep.url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', ...(withKey && { dpopKey: createIdJagDpopKey() }) }));
+          expect(result instanceof IdJagError || (!withKey && JSON.stringify(result) === JSON.stringify(tokens))).toBe(true);
+          expect(ms).toBeLessThan(500);
+        }
+      }
+    } finally {
+      await ep.close();
+    }
+    // The same answers handed to the SDK as they are, so these headers reach its parsing.
+    const sent: Array<string | undefined> = [];
+    const queue: Array<() => Response> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+      sent.push(init?.headers?.DPoP && readProof(init.headers.DPoP).payload.nonce);
+      return (queue.shift() || (() => Response.json({ error: 'unexpected_request' }, { status: 500 })))();
+    }) as typeof fetch;
+    const answer = (status: number, headers: Record<string, string>, body: unknown = {}) => () => Response.json(body, { status, headers });
+    const redeem = (dpopKey?: ReturnType<typeof createIdJagDpopKey>) => timed(() => redeemIdJag({ tokenEndpoint: 'https://auth.example/token', clientId: 'acme', assertion: 'jag', dpopKey }));
+    try {
+      const key = createIdJagDpopKey();
+      for (const challenge of [quoted, list]) {
+        // A 200 without a key: the normal result.
+        queue.push(answer(200, { 'WWW-Authenticate': challenge }, tokens));
+        let r = await redeem();
+        expect([r.result, r.ms < 500]).toEqual([tokens, true]);
+        queue.push(answer(200, { 'WWW-Authenticate': challenge }, jag));
+        r = await timed(() => requestIdJag({ tokenEndpoint: 'https://sso.example/token', clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example' }));
+        expect([r.result, r.ms < 500]).toEqual([{ assertion: 'h.p.s' }, true]);
+        // A 401 with a key and a nonce: no DPoP challenge with use_dpop_nonce, so no retry.
+        queue.push(answer(401, { 'WWW-Authenticate': challenge, 'DPoP-Nonce': 'n-1' }));
+        r = await redeem(key);
+        expect([r.result instanceof IdJagError && { code: r.result.code, status: r.result.status, dpopNonce: r.result.dpopNonce }, r.ms < 500])
+          .toEqual([{ code: 'server_error', status: 401, dpopNonce: 'n-1' }, true]);
+      }
+      // A 64 KB challenge that does ask, and a 64 KB valid nonce: one retry that carries it.
+      queue.push(answer(401, { 'WWW-Authenticate': asking, 'DPoP-Nonce': longNonce }), answer(200, {}, tokens));
+      let r = await redeem(key);
+      expect([r.result, r.ms < 500]).toEqual([tokens, true]);
+      // A 64 KB nonce that is not valid (a space at its end): no retry, not on the error.
+      queue.push(answer(401, { 'WWW-Authenticate': asking, 'DPoP-Nonce': `${'n'.repeat(65535)} x` }));
+      r = await redeem(key);
+      expect([r.result instanceof IdJagError && { code: r.result.code, dpopNonce: r.result.dpopNonce }, r.ms < 500]).toEqual([{ code: 'server_error', dpopNonce: undefined }, true]);
+      expect(sent).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, undefined, longNonce, undefined]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 
