@@ -26,7 +26,8 @@
 // same request once more, with a new proof that carries it. A DPoP-bound access token goes to the
 // resource with a proof for that method and URL that carries the token's hash (ath):
 //   await fetch(url, { headers: { Authorization: `DPoP ${accessToken}`, DPoP: idJagDpopProof(dpopKey, url, { method: 'GET', accessToken }) } });
-// An authorization server that checks DPoP proofs passes the proof key's thumbprint:
+// An authorization server that checks DPoP proofs passes the proof key's thumbprint, after it has
+// checked the proof and any nonce it requires (verify uses up the ID-JAG's jti):
 //   await idJag.verify(assertion, { clientId, dpopJkt });   // a bound ID-JAG without it is refused
 
 import * as crypto from 'crypto';
@@ -43,9 +44,14 @@ const ID_JAG_TYP = 'oauth-id-jag+jwt';
 /**
  * A refused ID-JAG or exchange; `code` is the OAuth error (invalid_grant for a bad ID-JAG,
  * temporarily_unavailable when a server could not be reached or its answer read).
+ * From requestIdJag and redeemIdJag: a token endpoint answer outside 2xx (a redirect included) has
+ * its `status`, and its JSON `error` as `code` when that is an OAuth error code (RFC 6749 error
+ * characters, at most 128), else server_error; a 2xx whose body is not a JSON object is
+ * invalid_response with its `status`; temporarily_unavailable has no `status` and fetch's error as
+ * its `cause`.
  * `dpopNonce`: the latest valid DPoP-Nonce the server sent during the call (RFC 9449 section 8),
- * if any: the retry's answer's when it had one, else the first answer's. A proof from
- * `idJagDpopProof(key, url, { nonce: err.dpopNonce })` carries it.
+ * if any: the retry's answer's when it had one, else the first answer's; every IdJagError of the
+ * call carries it. A proof from `idJagDpopProof(key, url, { nonce: err.dpopNonce })` carries it.
  */
 export class IdJagError extends Error {
   constructor(public readonly code: string, message: string, public readonly status?: number, public readonly dpopNonce?: string) {
@@ -110,22 +116,47 @@ export function createIdJagDpopKey(): IdJagDpopKey {
 /** What a proof from idJagDpopProof is for, besides its URL. */
 export interface IdJagDpopProofOptions {
   /**
-   * The request's HTTP method, sent trimmed and uppercased as htm; empty (or blank) means POST.
-   * Anything but RFC 9110 token characters is a TouchqueConfigError.
+   * The request's HTTP method, sent as htm: trimmed of ASCII whitespace only (space, tab, CR, LF,
+   * VT and FF; not NUL or a Unicode space such as U+00A0), then uppercased; empty (or blank) means
+   * POST. Anything but RFC 9110 token characters is a TouchqueConfigError.
    */
   method?: string;
-  /** The DPoP-bound access token the request carries (Authorization: DPoP <token>): adds ath, its SHA-256. */
+  /** The DPoP-bound access token the request carries (Authorization: DPoP <token>): adds ath, its SHA-256. Empty: no ath. */
   accessToken?: string;
-  /** The server's DPoP-Nonce (RFC 9449 section 8): adds the nonce claim. */
+  /** The server's DPoP-Nonce (RFC 9449 section 8): adds the nonce claim, as given (not checked). Empty: no nonce. */
   nonce?: string;
 }
 
 // RFC 9110 token characters (tchar): an HTTP method, an auth-scheme or a parameter name.
 const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
+// What a method is trimmed of: ASCII whitespace (space, tab, CR, LF, VT, FF). String#trim would
+// also take Unicode spaces such as U+00A0, which are not token characters: those are refused.
+const ASCII_WHITESPACE = ' \t\r\n\v\f';
+
+/** s without the given characters at either end; linear (a regular expression such as /[ \t]+$/ is not). */
+function trimOf(s: string, chars: string): string {
+  let start = 0;
+  let end = s.length;
+  while (start < end && chars.includes(s[start])) start++;
+  while (end > start && chars.includes(s[end - 1])) end--;
+  return s.slice(start, end);
+}
+
+/** url as a URL when it is an absolute http or https URL, else undefined. */
+function absoluteHttpUrl(url: string): URL | undefined {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * A DPoP proof for one request to `url`: a POST to a token endpoint unless `options.method` says
- * otherwise. For a resource, give the method and the access token sent with it.
+ * A DPoP proof for one request to `url`, an absolute http or https URL (anything else is a
+ * TouchqueConfigError): a POST to a token endpoint unless `options.method` says otherwise. For a
+ * resource, give the method and the access token sent with it.
  * htu: scheme and host lowercased, the default port dropped, "/" for an empty path, the path kept
  * as given (its percent-encoding and case unchanged; like fetch, `new URL()` resolves "." and ".."
  * segments and percent-encodes characters a URL path cannot carry, such as spaces), no query or
@@ -134,9 +165,11 @@ const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 export function idJagDpopProof(key: IdJagDpopKey, url: string, options?: IdJagDpopProofOptions): string {
   const { method, accessToken, nonce } = options || {};
   // Checked before uppercasing, which can turn a character that is not a token character into ones that are (ß becomes SS).
-  const given = String(method ?? '').trim();
+  const given = trimOf(String(method ?? ''), ASCII_WHITESPACE);
   if (given && !TOKEN.test(given)) throw new TouchqueConfigError(`idJagDpopProof: method ${JSON.stringify(given)} is not an HTTP method (RFC 9110 token characters only)`);
-  const u = new URL(url);
+  // Not echoed: a URL can carry credentials.
+  const u = absoluteHttpUrl(url);
+  if (!u) throw new TouchqueConfigError('idJagDpopProof: url must be an absolute http or https URL');
   // Rebuilt, never passed through: a key made by hand may carry d or other members in publicJwk.
   const { kty, crv, x, y } = key.publicJwk;
   const b64 = (v: string | Buffer) => Buffer.from(v).toString('base64url');
@@ -261,11 +294,16 @@ const NONCE = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
 
 /**
  * The answer's DPoP-Nonce when it is one valid nonce, else undefined (missing, empty or not nonce
- * syntax). fetch reads a header sent twice as both values joined with ", ", which never is one.
+ * syntax). fetch reads a header sent more than once as its values joined with ", " (a nonce has no
+ * space, so the join is never inside one): it counts only when every value is the same valid
+ * nonce, which is then the nonce. Spaces and tabs around a value are not part of it (RFC 9110
+ * section 5.5); fetch keeps those after a value.
  */
 function nonceOf(res: Response): string | undefined {
-  const value = res.headers.get('dpop-nonce');
-  return value !== null && NONCE.test(value) ? value : undefined;
+  const header = res.headers.get('dpop-nonce');
+  if (header === null) return undefined;
+  const [first, ...more] = header.split(', ').map((value) => trimOf(value, ' \t'));
+  return NONCE.test(first) && more.every((value) => value === first) ? first : undefined;
 }
 
 /** The server wants a nonce in the proof (RFC 9449 section 8): 400 or 401 use_dpop_nonce. */
@@ -291,7 +329,8 @@ function challengeAsksForNonce(header: string): boolean {
       dpop = name.toLowerCase() === 'dpop';
       [name, rest] = leadingToken(rest);
     }
-    if (dpop && name.toLowerCase() === 'error' && rest[0] === '=' && paramValue(rest.slice(1).trim()) === 'use_dpop_nonce') return true;
+    // Only spaces and tabs around the value (String#trim would take U+00A0 as well): exactly use_dpop_nonce.
+    if (dpop && name.toLowerCase() === 'error' && rest[0] === '=' && paramValue(trimOf(rest.slice(1), ' \t')) === 'use_dpop_nonce') return true;
   }
   return false;
 }
@@ -322,9 +361,14 @@ function leadingToken(s: string): [string, string] {
 /** An auth-param value: a quoted-string's content with its quoted-pairs undone, or the token as it is. */
 const paramValue = (v: string) => (v.length >= 2 && v[0] === '"' && v[v.length - 1] === '"' ? v.slice(1, -1).replace(/\\([\s\S])/g, '$1') : v);
 
+// RFC 6749 section 5.2: an error code is 1*( %x20-21 / %x23-5B / %x5D-7E ); taken from an answer up to 128 characters.
+const ERROR_CODE = /^[\x20\x21\x23-\x5B\x5D-\x7E]{1,128}$/;
+
 /**
- * POSTs a form to a token endpoint: its answer as a JSON object ({} for anything else), and the
- * latest valid DPoP-Nonce the server sent. A refusal, or no readable answer, is an IdJagError.
+ * POSTs a form to a token endpoint: its answer, a JSON object, and the latest valid DPoP-Nonce the
+ * server sent. Anything else is an IdJagError: an answer outside 2xx (a redirect is not followed)
+ * with its status, a 2xx that is not a JSON object (invalid_response), or no answer read in full
+ * (temporarily_unavailable). Each carries that nonce.
  */
 async function postForm(url: string, form: Record<string, string | undefined>, basic?: { id: string; secret: string }, dpopKey?: IdJagDpopKey): Promise<{ data: Record<string, unknown>; nonce?: string }> {
   const u = safeUrl(url);
@@ -333,6 +377,15 @@ async function postForm(url: string, form: Record<string, string | undefined>, b
   for (const [k, v] of Object.entries(form)) if (v !== undefined) body.set(k, v);
   // The latest valid DPoP-Nonce the server sent in this call; the retry's proof carries it.
   let nonce: string | undefined;
+  // Not reached, no answer in 10 s, an answer fetch will not read (malformed headers; by default
+  // Node's fetch refuses response headers over 16 KB) or a body cut short: an IdJagError, with
+  // fetch's error as its cause.
+  const unavailable = (err: unknown) => {
+    const why = (err as { cause?: { message?: unknown } } | null)?.cause?.message || (err as { message?: unknown } | null)?.message || err;
+    const failed = new IdJagError('temporarily_unavailable', `${url} could not be read: ${String(why)}`, undefined, nonce);
+    Object.defineProperty(failed, 'cause', { value: err, configurable: true, writable: true });
+    return failed;
+  };
   // The same body and client authentication on every send; a new proof (jti, iat) each time.
   const send = async () => {
     const headers = {
@@ -341,26 +394,42 @@ async function postForm(url: string, form: Record<string, string | undefined>, b
       ...(basic && { Authorization: `Basic ${Buffer.from(`${encodeURIComponent(basic.id)}:${encodeURIComponent(basic.secret)}`).toString('base64')}` }),
     };
     let res: Response;
+    let text: string;
     try {
-      res = await fetch(u, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers, body: body.toString() });
+      // 'manual': a redirect is answered as it is (Node's fetch gives its status), never followed.
+      res = await fetch(u, { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000), headers, body: body.toString() });
     } catch (err) {
-      // Not reached, no answer in 10 s, a redirect, or an answer fetch cannot read (by default
-      // Node's fetch refuses response headers over 16 KB): an IdJagError, with fetch's error as its cause.
-      const why = (err as { cause?: { message?: unknown } } | null)?.cause?.message || (err as { message?: unknown } | null)?.message || err;
-      const failed = new IdJagError('temporarily_unavailable', `${url} could not be read: ${String(why)}`, undefined, nonce);
-      Object.defineProperty(failed, 'cause', { value: err, configurable: true, writable: true });
-      throw failed;
+      throw unavailable(err);
     }
+    // Before the body: an answer whose body cannot be read still has its nonce on the error.
     nonce = nonceOf(res) ?? nonce;
-    // Only a JSON object is an answer; anything else (null, a string, an array) reads as {}.
-    const json: unknown = await res.json().catch(() => ({}));
-    return { res, data: (json && typeof json === 'object' && !Array.isArray(json) ? json : {}) as Record<string, unknown> };
+    try {
+      text = await res.text();
+    } catch (err) {
+      throw unavailable(err);
+    }
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    // Only a JSON object is an answer. Anything else (null, a string, an array, not JSON) is read as
+    // {} for the retry and a refusal, and is invalid_response in a 2xx.
+    const object = json !== null && typeof json === 'object' && !Array.isArray(json);
+    return { res, object, data: (object ? json : {}) as Record<string, unknown> };
   };
-  let { res, data } = await send();
+  let { res, object, data } = await send();
   // Asked for a nonce, with a valid one: once more with it, never in a loop. Without a key there
   // is no proof to retry. Before any retry, nonce is the first answer's.
-  if (dpopKey && nonce && asksForNonce(res, data)) ({ res, data } = await send());
-  if (!res.ok) throw new IdJagError(String(data.error || 'server_error'), String(data.error_description || `${url} answered ${res.status}`), res.status, nonce);
+  if (dpopKey && nonce && asksForNonce(res, data)) ({ res, object, data } = await send());
+  if (!res.ok) {
+    // The code only from the body's error (WWW-Authenticate only decides the retry).
+    const code = typeof data.error === 'string' && ERROR_CODE.test(data.error) ? data.error : 'server_error';
+    const description = typeof data.error_description === 'string' && data.error_description ? data.error_description : `${url} answered ${res.status}`;
+    throw new IdJagError(code, description, res.status, nonce);
+  }
+  if (!object) throw new IdJagError('invalid_response', `${url} answered ${res.status} without a JSON object`, res.status, nonce);
   return { data, nonce };
 }
 
@@ -417,7 +486,11 @@ export async function requestIdJag(o: RequestIdJagOptions): Promise<{ assertion:
   };
 }
 
-/** Trades an ID-JAG for an access token at the other service's authorization server (jwt-bearer). */
+/**
+ * Trades an ID-JAG for an access token at the other service's authorization server (jwt-bearer):
+ * its 2xx answer, a JSON object. Any other status, a 2xx that is not a JSON object
+ * (invalid_response) or no answer read (temporarily_unavailable) is an IdJagError.
+ */
 // With dpopKey (the key the ID-JAG is bound to), a DPoP proof goes along (once more with a valid nonce
 // the server asks for); the access token is then DPoP-bound too: send it with idJagDpopProof(dpopKey, url, { method, accessToken }).
 export async function redeemIdJag(o: { tokenEndpoint: string; clientId: string; clientSecret?: string; assertion: string; resource?: string; scope?: string | string[]; dpopKey?: IdJagDpopKey }): Promise<Record<string, unknown>> {

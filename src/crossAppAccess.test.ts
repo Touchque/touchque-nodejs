@@ -6,8 +6,9 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { generateKeyPairSync, createPublicKey, verify as verifySig, createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
-import { IdJagVerifier, IdJagError, requestIdJag, redeemIdJag, createIdJagDpopKey, idJagDpopProof, verifyAgentCard, signAgentCard, canonicalJson, AgentCardError, TouchqueConfigError } from './index';
+import { IdJagVerifier, IdJagError, requestIdJag, redeemIdJag, createIdJagDpopKey, idJagDpopProof, verifyAgentCard, signAgentCard, canonicalJson, AgentCardError, TouchqueConfigError, type IdJagDpopProofOptions } from './index';
 
 let fake: ChildProcess;
 let base = '';
@@ -175,6 +176,43 @@ describe('idJagDpopProof', () => {
     }
   });
 
+  test('url: an absolute http or https URL; anything else is a TouchqueConfigError (not a TypeError) that does not echo it', () => {
+    const key = createIdJagDpopKey();
+    for (const url of ['ftp://h.example/x', 'ftp://user:s3cret@h.example/x', 'file:///etc/passwd', 'ws://h.example/x', 'mailto:a@h.example', 'data:text/plain,x',
+      '/token', 'token', '', ' ', 'h.example/token', '//h.example/token', 'https//h.example/x', 'not a url', 'http://', 'https://[::1/x', undefined, null]) {
+      let thrown: unknown;
+      try {
+        idJagDpopProof(key, url as string);
+      } catch (e) {
+        thrown = e;
+      }
+      expect([url, thrown instanceof TouchqueConfigError]).toEqual([url, true]);
+      expect((thrown as Error).message).not.toContain('s3cret');
+    }
+    expect(readProof(idJagDpopProof(key, 'HTTP://h.example/x')).payload.htu).toBe('http://h.example/x');
+    expect(readProof(idJagDpopProof(key, 'https://h.example')).payload.htu).toBe('https://h.example/');
+  });
+
+  test('method: trimmed of ASCII whitespace only (space, tab, CR, LF, VT, FF), not NUL or Unicode spaces', () => {
+    const key = createIdJagDpopKey();
+    const htm = (method?: string) => readProof(idJagDpopProof(key, 'https://api.example.com/v1/files', { method })).payload.htm;
+    expect([htm('\vget\f'), htm(' \r\n\tpatch \t\r\n'), htm('\f\v \t\r\n'), htm('\v')]).toEqual(['GET', 'PATCH', 'POST', 'POST']);
+    // Unicode spaces String#trim would take (U+00A0, U+FEFF, U+2028, U+3000, U+1680, U+2000), NEL and NUL stay: not token characters.
+    for (const method of ['\u00a0GET', 'GET\u00a0', '\u00a0', '\ufeffGET', 'GET\u2028', '\u3000GET', '\u1680GET', 'GET\u2000', '\u0085GET', '\u0000GET', 'GET\u0000', '\u0000']) {
+      expect(() => idJagDpopProof(key, 'https://api.example.com/v1/files', { method })).toThrow(TouchqueConfigError);
+    }
+  });
+
+  test('an empty or null access token or nonce is left out; a nonce is sent as given', () => {
+    const key = createIdJagDpopKey();
+    const payload = (options: object) => readProof(idJagDpopProof(key, 'https://api.example.com/v1/files', options as IdJagDpopProofOptions)).payload;
+    for (const options of [{ accessToken: '' }, { nonce: '' }, { accessToken: '', nonce: '' }, { accessToken: null, nonce: null }, { accessToken: undefined, nonce: undefined }]) {
+      expect(Object.keys(payload(options)).sort()).toEqual(['htm', 'htu', 'iat', 'jti']);
+    }
+    // Not checked against the nonce syntax: the caller's value as it is.
+    expect(payload({ nonce: 'a b"\\' }).nonce).toBe('a b"\\');
+  });
+
   test('the header jwk is rebuilt from the key: kty, crv, x and y, never d or other members', () => {
     // A key made by hand whose publicJwk is the private JWK with more members.
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -190,37 +228,67 @@ describe('idJagDpopProof', () => {
   });
 });
 
-describe('DPoP nonce (RFC 9449 section 8) at the token endpoint', () => {
-  type Seen = { url: string; body: string; authorization?: string; proof?: ReturnType<typeof readProof> };
-  // A header given as a list is sent once per value; null drops the connection without an answer.
-  type Reply = { status: number; headers?: Record<string, string | string[]>; body?: unknown };
-  // A token endpoint that records each request and answers what `reply` says for the nth one.
-  const tokenEndpoint = async (reply: (n: number, seen: Seen) => Reply | null) => {
-    const seen: Seen[] = [];
-    const srv: Server = createServer((req, res) => {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk; });
-      req.on('end', () => {
-        const got: Seen = { url: req.url || '', body, authorization: req.headers.authorization, ...(req.headers.dpop && { proof: readProof(String(req.headers.dpop)) }) };
-        seen.push(got);
-        const answer = reply(seen.length, got);
-        if (!answer) return req.socket.destroy();
-        res.writeHead(answer.status, { 'Content-Type': 'application/json', ...answer.headers });
-        res.end(answer.body === undefined ? '' : JSON.stringify(answer.body));
-      });
+type Seen = { url: string; body: string; authorization?: string; proof?: ReturnType<typeof readProof> };
+// A header given as a list is sent once per value; null drops the connection without an answer.
+// `raw` is a body sent as it is (not JSON-encoded).
+type Reply = { status: number; headers?: Record<string, string | string[]>; body?: unknown; raw?: string };
+// A token endpoint that records each request and answers what `reply` says for the nth one.
+const tokenEndpoint = async (reply: (n: number, seen: Seen) => Reply | null) => {
+  const seen: Seen[] = [];
+  const srv: Server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const got: Seen = { url: req.url || '', body, authorization: req.headers.authorization, ...(req.headers.dpop && { proof: readProof(String(req.headers.dpop)) }) };
+      seen.push(got);
+      const answer = reply(seen.length, got);
+      if (!answer) return req.socket.destroy();
+      res.writeHead(answer.status, { 'Content-Type': 'application/json', ...answer.headers });
+      res.end(answer.raw ?? (answer.body === undefined ? '' : JSON.stringify(answer.body)));
     });
-    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
-    return { seen, url: `http://127.0.0.1:${(srv.address() as any).port}`, close: () => new Promise<void>((r) => srv.close(() => r())) };
-  };
-  const askNonce = (nonce: string): Reply => ({ status: 400, headers: { 'DPoP-Nonce': nonce }, body: { error: 'use_dpop_nonce', error_description: 'Authorization server requires nonce in DPoP proof' } });
-  // An ID-JAG bound to the key of the request's proof.
-  const jagFor = (got: Seen) => {
-    const jwk = got.proof?.header.jwk;
-    const jkt = createHash('sha256').update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })).digest('base64url');
-    return `${Buffer.from('{"typ":"oauth-id-jag+jwt","alg":"RS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({ cnf: { jkt } })).toString('base64url')}.sig`;
-  };
-  const reason = (p: Promise<unknown>) => p.then(() => 'accepted', (e: IdJagError) => ({ name: e.name, code: e.code, status: e.status, dpopNonce: e.dpopNonce }));
+  });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+  return { seen, url: `http://127.0.0.1:${(srv.address() as any).port}`, close: () => new Promise<void>((r) => srv.close(() => r())) };
+};
+const askNonce = (nonce: string): Reply => ({ status: 400, headers: { 'DPoP-Nonce': nonce }, body: { error: 'use_dpop_nonce', error_description: 'Authorization server requires nonce in DPoP proof' } });
+// An ID-JAG bound to the key of the request's proof.
+const jagFor = (got: Seen) => {
+  const jwk = got.proof?.header.jwk;
+  const jkt = createHash('sha256').update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })).digest('base64url');
+  return `${Buffer.from('{"typ":"oauth-id-jag+jwt","alg":"RS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({ cnf: { jkt } })).toString('base64url')}.sig`;
+};
+const reason = (p: Promise<unknown>) => p.then(() => 'accepted', (e: IdJagError) => ({ name: e.name, code: e.code, status: e.status, dpopNonce: e.dpopNonce }));
 
+// A token endpoint on a raw socket, for answers Node's http server will not send and fetch will not
+// read (control bytes in a header, a 64 KB header line, a body cut short): the nth request gets the
+// bytes `reply` returns, as they are, or null resets the connection. Each request is recorded with
+// its proof's nonce.
+const rawEndpoint = async (reply: (n: number) => string | null) => {
+  const nonces: Array<string | undefined> = [];
+  const srv = createNetServer((socket) => {
+    let got = '';
+    socket.on('error', () => {});
+    socket.on('data', (chunk) => {
+      got += chunk.toString('latin1');
+      const end = got.indexOf('\r\n\r\n');
+      if (end < 0 || got.length < end + 4 + Number(/\r\ncontent-length: *(\d+)/i.exec(got.slice(0, end))?.[1] || 0)) return;
+      const proof = /\r\ndpop: *([^\r\n]+)/i.exec(got.slice(0, end))?.[1];
+      nonces.push(proof && readProof(proof).payload.nonce);
+      got = '';
+      const answer = reply(nonces.length);
+      if (answer === null) socket.resetAndDestroy();
+      else socket.end(answer, 'latin1');
+    });
+  });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+  return { nonces, url: `http://127.0.0.1:${(srv.address() as AddressInfo).port}`, close: () => new Promise<void>((r) => srv.close(() => r())) };
+};
+// An HTTP/1.1 answer as bytes: the status line, the header lines as given, then Content-Length (the
+// body's unless given) and Connection: close.
+const rawAnswer = (status: string, headers: string[], body = '', length = body.length) => `HTTP/1.1 ${status}\r\n${[...headers, `Content-Length: ${length}`, 'Connection: close'].join('\r\n')}\r\n\r\n${body}`;
+const rawAskNonce = (nonceLines: string[]) => rawAnswer('400 Bad Request', ['Content-Type: application/json', ...nonceLines], '{"error":"use_dpop_nonce"}');
+
+describe('DPoP nonce (RFC 9449 section 8) at the token endpoint', () => {
   test('requestIdJag and redeemIdJag send the same request once more, with a new proof that carries the nonce', async () => {
     const ep = await tokenEndpoint((n, got) => {
       if (got.proof?.payload.nonce !== 'n-1') return askNonce('n-1');
@@ -275,6 +343,16 @@ describe('DPoP nonce (RFC 9449 section 8) at the token endpoint', () => {
       ['Bearer realm="x",, dpop ERROR = "use_dpop_nonce"', true],
       ['DPoP error="use\\_dpop_nonce"', true],
       [['Bearer realm="x"', 'DPoP error="use_dpop_nonce"'], true],
+      ['Bearer realm=", DPoP error=use_dpop_nonce,"', false],
+      // An unclosed quoted string has no value (its closing quote escaped, or none).
+      ['DPoP error="use_dpop_nonce', false],
+      ['DPoP error="use_dpop_nonce\\"', false],
+      ['DPoP error="use_dpop_nonce\\", Bearer realm="x"', false],
+      // Exactly use_dpop_nonce: spaces and tabs around it only, not U+00A0 (sent as the byte A0).
+      ['DPoP error= \tuse_dpop_nonce \t', true],
+      ['DPoP error=use_dpop_nonce\u00a0', false],
+      ['DPoP error=\u00a0use_dpop_nonce', false],
+      ['DPoP error="use_dpop_nonce"\u00a0', false],
     ];
     let challenge: string | string[] = '';
     const ep = await tokenEndpoint((n, got): Reply => (got.proof?.payload.nonce === 'n-1'
@@ -360,9 +438,9 @@ describe('DPoP nonce (RFC 9449 section 8) at the token endpoint', () => {
       expect(await reason(redeem())).toEqual({ name: 'IdJagError', code: 'server_error', status: 401, dpopNonce: undefined });
       expect(await reason(redeem())).toEqual({ name: 'IdJagError', code: 'server_error', status: 400, dpopNonce: undefined });
       expect(await reason(requestIdJag({ tokenEndpoint: `${ep.url}/idp/token`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey: key })))
-        .toMatchObject({ name: 'IdJagError', code: 'invalid_response' });
-      // A 2xx that is not an object: {} from redeemIdJag (it used to hand back the null, string or array).
-      expect([await redeem(), await redeem(), await redeem()]).toEqual([{}, {}, {}]);
+        .toEqual({ name: 'IdJagError', code: 'invalid_response', status: 200, dpopNonce: undefined });
+      // A 2xx that is not an object: invalid_response from redeemIdJag too (it handed back the null, string or array).
+      for (let i = 0; i < 3; i++) expect(await reason(redeem())).toEqual({ name: 'IdJagError', code: 'invalid_response', status: 200, dpopNonce: undefined });
       expect(ep.seen).toHaveLength(7);
     } finally {
       await ep.close();
@@ -393,8 +471,8 @@ describe('DPoP nonce (RFC 9449 section 8) at the token endpoint', () => {
   });
 
   test('no retry, and no nonce on the error, unless DPoP-Nonce is one valid nonce (1*NQCHAR)', async () => {
-    // Empty, a space, a double quote, a backslash, a byte above ~, and the header twice (fetch reads "a, b").
-    const invalid: Array<string | string[]> = ['', 'n 1', 'n"1', 'n\\1', 'nö', ['n-1', 'n-2'], ['n-1', 'n-1']];
+    // Empty, a space, a double quote, a backslash, a byte above ~, and the header twice with different values (fetch reads "a, b").
+    const invalid: Array<string | string[]> = ['', 'n 1', 'n"1', 'n\\1', 'nö', ['n-1', 'n-2']];
     const ep = await tokenEndpoint((n): Reply => (n <= invalid.length
       ? { status: 400, headers: { 'DPoP-Nonce': invalid[n - 1] }, body: { error: 'use_dpop_nonce' } }
       : { status: 401, headers: { 'WWW-Authenticate': 'DPoP error="use_dpop_nonce"', 'DPoP-Nonce': 'n 9' } }));
@@ -503,6 +581,186 @@ describe('DPoP nonce (RFC 9449 section 8) at the token endpoint', () => {
       expect(sent).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, undefined, longNonce, undefined]);
     } finally {
       globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe('token endpoint answers: only a 2xx JSON object is a success', () => {
+  const request = (url: string, dpopKey?: ReturnType<typeof createIdJagDpopKey>) => requestIdJag({ tokenEndpoint: `${url}/idp/token`, clientId: 'tqapp_test', clientSecret: 'tqs_test', idToken: 'idtoken:ada', audience: 'https://rs.example', dpopKey });
+  const redeem = (url: string, dpopKey?: ReturnType<typeof createIdJagDpopKey>) => redeemIdJag({ tokenEndpoint: `${url}/rs/token`, clientId: 'acme-at-rs', assertion: 'jag', dpopKey });
+  // The error as fields, with whether fetch's (or the body read's) error is kept as its cause.
+  const failure = (p: Promise<unknown>) => p.then(() => 'accepted', (e: IdJagError & { cause?: unknown }) => ({ name: e.name, code: e.code, status: e.status, dpopNonce: e.dpopNonce, cause: e.cause instanceof Error }));
+  const unavailable = (dpopNonce?: string) => ({ name: 'IdJagError', code: 'temporarily_unavailable', status: undefined, dpopNonce, cause: true });
+
+  test('a redirect (3xx) is an IdJagError with its status and nonce, never followed', async () => {
+    const tokens = { access_token: 'at', token_type: 'Bearer' };
+    // Each redirect points to /elsewhere on this server, which would answer tokens if it were followed.
+    const moved =(status: number, body: unknown = tokens): Reply => ({ status, headers: { Location: '/elsewhere', 'DPoP-Nonce': 'n-3' }, body });
+    let next: Reply[] = [];
+    const ep = await tokenEndpoint((n, got) => (got.url === '/elsewhere' ? { status: 200, body: tokens } : next.shift() || { status: 500, body: { error: 'unexpected_request' } }));
+    try {
+      const key = createIdJagDpopKey();
+      for (const status of [301, 302, 303, 307, 308]) {
+        next = [moved(status)];
+        expect(await reason(redeem(ep.url, key))).toEqual({ name: 'IdJagError', code: 'server_error', status, dpopNonce: 'n-3' });
+      }
+      // The body's error is the code; requestIdJag the same.
+      next = [moved(302, { error: 'moved_here' })];
+      expect(await reason(redeem(ep.url))).toEqual({ name: 'IdJagError', code: 'moved_here', status: 302, dpopNonce: 'n-3' });
+      next = [moved(307)];
+      expect(await reason(request(ep.url, key))).toEqual({ name: 'IdJagError', code: 'server_error', status: 307, dpopNonce: 'n-3' });
+      expect(ep.seen.map((s) => s.url)).toEqual([...Array(6).fill('/rs/token'), '/idp/token']);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('the code is the body\'s error only when it is an RFC 6749 error code of at most 128 characters, else server_error', async () => {
+    const cases: Array<[unknown, string]> = [
+      ['invalid_grant', 'invalid_grant'], ['with space !#[]~', 'with space !#[]~'], ['a'.repeat(128), 'a'.repeat(128)],
+      ['a'.repeat(129), 'server_error'], ['', 'server_error'], ['bad"quote', 'server_error'], ['back\\slash', 'server_error'], ['tab\there', 'server_error'],
+      ['new\nline', 'server_error'], ['caf\u00e9', 'server_error'], ['\u0000', 'server_error'], [5, 'server_error'], [true, 'server_error'], [null, 'server_error'],
+      [['invalid_grant'], 'server_error'], [{ toString: 1 }, 'server_error'],
+    ];
+    let next: Reply = { status: 400 };
+    const ep = await tokenEndpoint(() => next);
+    try {
+      for (const [error, code] of cases) {
+        next = { status: 400, body: { error } };
+        expect([error, await reason(redeem(ep.url))]).toEqual([error, { name: 'IdJagError', code, status: 400, dpopNonce: undefined }]);
+      }
+      // An error_description that is not a string is not the message (an object with toString: 1 threw a TypeError).
+      next = { status: 400, body: { error: { toString: 1 }, error_description: { toString: 1 } } };
+      const thrown = await redeem(ep.url).catch((e) => e);
+      expect([thrown.name, thrown.code, thrown.message]).toEqual(['IdJagError', 'server_error', `${ep.url}/rs/token answered 400`]);
+      next = { status: 400, body: { error: 'invalid_grant', error_description: 'expired' } };
+      expect((await redeem(ep.url).catch((e) => e)).message).toBe('expired');
+      // Never from WWW-Authenticate, which only decides the retry.
+      next = { status: 401, headers: { 'WWW-Authenticate': 'DPoP error="invalid_dpop_proof"', 'DPoP-Nonce': 'n-1' } };
+      expect(await reason(redeem(ep.url, createIdJagDpopKey()))).toEqual({ name: 'IdJagError', code: 'server_error', status: 401, dpopNonce: 'n-1' });
+      // Every status outside 2xx, the same way.
+      for (const status of [404, 418, 500, 503]) {
+        next = { status, body: { error: 'invalid_request' } };
+        expect(await reason(redeem(ep.url))).toEqual({ name: 'IdJagError', code: 'invalid_request', status, dpopNonce: undefined });
+      }
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('a 2xx that is not a JSON object is invalid_response with its status and the latest nonce, from both calls', async () => {
+    // JSON null, a string, a number, true, an array, not JSON, an empty body.
+    const bodies = ['null', '"at"', '5', 'true', '["at"]', '<html>hi</html>', ''];
+    let next: Reply[] = [];
+    const ep = await tokenEndpoint(() => next.shift() || { status: 500, body: { error: 'unexpected_request' } });
+    try {
+      const key = createIdJagDpopKey();
+      for (const raw of bodies) {
+        for (const [call, status] of [[redeem, 200], [request, 201]] as const) {
+          next = [{ status, headers: { 'DPoP-Nonce': 'n-5' }, raw }];
+          expect([raw, await reason(call(ep.url, key))]).toEqual([raw, { name: 'IdJagError', code: 'invalid_response', status, dpopNonce: 'n-5' }]);
+        }
+      }
+      // After the nonce retry, the first answer's nonce when the 2xx has none.
+      for (const call of [redeem, request]) {
+        next = [askNonce('n-1'), { status: 200, raw: 'null' }];
+        expect(await reason(call(ep.url, key))).toEqual({ name: 'IdJagError', code: 'invalid_response', status: 200, dpopNonce: 'n-1' });
+      }
+      // A JSON object is the answer, as before.
+      next = [{ status: 200, raw: '{"access_token":"at","token_type":"Bearer"}' }];
+      expect(await redeem(ep.url, key)).toEqual({ access_token: 'at', token_type: 'Bearer' });
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('not reached or not read (raw socket): temporarily_unavailable, no status, fetch\'s error as the cause, the latest nonce', async () => {
+    // A port nothing listens on.
+    const gone = createNetServer();
+    await new Promise<void>((r) => gone.listen(0, '127.0.0.1', () => r()));
+    const closed = `http://127.0.0.1:${(gone.address() as AddressInfo).port}`;
+    await new Promise<void>((r) => gone.close(() => r()));
+    expect(await failure(redeem(closed, createIdJagDpopKey()))).toEqual(unavailable());
+    expect(await failure(request(closed))).toEqual(unavailable());
+
+    const json = 'Content-Type: application/json';
+    const tooLong = `X-Long: ${'a'.repeat(65536)}`;
+    const answers: Array<string | null> = [];
+    const ep = await rawEndpoint(() => (answers.length ? answers.shift()! : rawAnswer('500 Internal Server Error', [json], '{"error":"unexpected_request"}')));
+    try {
+      const key = createIdJagDpopKey();
+      const cases: Array<[string, Array<string | null>, string | undefined]> = [
+        // On the first request: reset, control bytes in a header (fetch refuses them), a 64 KB header line, a body cut short.
+        ['reset', [null], undefined],
+        ['control byte', [rawAnswer('200 OK', [json, 'X-Odd: a\u0001b'], '{}')], undefined],
+        ['NUL byte', [rawAnswer('400 Bad Request', [json, 'DPoP-Nonce: n\u00001'], '{"error":"use_dpop_nonce"}')], undefined],
+        ['64 KB header', [rawAnswer('200 OK', [json, tooLong], '{}')], undefined],
+        ['200 cut short', [rawAnswer('200 OK', [json, 'DPoP-Nonce: n-7'], '{"access_tok', 100)], 'n-7'],
+        ['400 cut short', [rawAnswer('400 Bad Request', [json], '{"error":"inv', 100)], undefined],
+        // On the nonce retry: the first answer's nonce, or the retry answer's when it had a valid one.
+        ['retry reset', [rawAskNonce(['DPoP-Nonce: n-1']), null], 'n-1'],
+        ['retry control byte', [rawAskNonce(['DPoP-Nonce: n-1']), rawAnswer('400 Bad Request', [json, 'DPoP-Nonce: n-2\u007f'], '{}')], 'n-1'],
+        ['retry 64 KB header', [rawAskNonce(['DPoP-Nonce: n-1']), rawAnswer('200 OK', [json, 'DPoP-Nonce: n-2', tooLong], '{}')], 'n-1'],
+        ['retry cut short', [rawAskNonce(['DPoP-Nonce: n-1']), rawAnswer('200 OK', [json, 'DPoP-Nonce: n-2'], '{"a', 50)], 'n-2'],
+        ['retry cut short, nonce invalid', [rawAskNonce(['DPoP-Nonce: n-1']), rawAnswer('200 OK', [json, 'DPoP-Nonce: n 2'], '{"a', 50)], 'n-1'],
+      ];
+      for (const [name, sent, dpopNonce] of cases) {
+        for (const call of [redeem, request]) {
+          answers.push(...sent);
+          const before = ep.nonces.length;
+          expect([name, await failure(call(ep.url, key))]).toEqual([name, unavailable(dpopNonce)]);
+          expect([name, ep.nonces.length - before]).toEqual([name, sent.length]);
+        }
+      }
+      // The retry carried the first answer's nonce.
+      expect(ep.nonces.filter((n) => n !== undefined).every((n) => n === 'n-1')).toBe(true);
+    } finally {
+      await ep.close();
+    }
+  });
+
+  test('DPoP-Nonce sent more than once: one nonce only when every value is the same valid nonce', async () => {
+    // [the DPoP-Nonce header lines, the nonce the retry carries or undefined for no retry]
+    const cases: Array<[string[], string | undefined]> = [
+      [['n-1', 'n-1'], 'n-1'],
+      [['n-1', 'n-1', 'n-1'], 'n-1'],
+      // Spaces and tabs around a value are not part of it (fetch keeps those after a value).
+      [['n-1 ', 'n-1\t'], 'n-1'],
+      [['n-1 '], 'n-1'],
+      // One line: "n-1,n-1" is one valid nonce; "n-1, n-1" reads as fetch's join of two lines.
+      [['n-1,n-1'], 'n-1,n-1'],
+      [['n-1, n-1'], 'n-1'],
+      [['n-1', 'n-2'], undefined],
+      [['n-1', 'n-1', 'n-2'], undefined],
+      [['n-1', ''], undefined],
+      [['', 'n-1'], undefined],
+      [['a b', 'a b'], undefined],
+      [['n-1, '], undefined],
+    ];
+    const answers: string[] = [];
+    const ep = await rawEndpoint(() => answers.shift() ?? rawAnswer('400 Bad Request', ['Content-Type: application/json'], '{"error":"invalid_dpop_proof"}'));
+    try {
+      const key = createIdJagDpopKey();
+      for (const [lines, retried] of cases) {
+        answers.push(rawAskNonce(lines.map((v) => `DPoP-Nonce: ${v}`)));
+        const before = ep.nonces.length;
+        const got = await reason(redeem(ep.url, key));
+        expect([lines, ep.nonces.slice(before)]).toEqual([lines, retried === undefined ? [undefined] : [undefined, retried]]);
+        expect([lines, got]).toEqual([lines, { name: 'IdJagError', code: retried === undefined ? 'use_dpop_nonce' : 'invalid_dpop_proof', status: 400, dpopNonce: retried }]);
+      }
+      // On the retry's answer: the same value twice is its nonce; different values leave the first answer's.
+      answers.push(rawAskNonce(['DPoP-Nonce: n-1']), rawAnswer('400 Bad Request', ['DPoP-Nonce: n-2', 'DPoP-Nonce: n-2'], '{"error":"invalid_dpop_proof"}'));
+      expect(await reason(redeem(ep.url, key))).toEqual({ name: 'IdJagError', code: 'invalid_dpop_proof', status: 400, dpopNonce: 'n-2' });
+      answers.push(rawAskNonce(['DPoP-Nonce: n-1']), rawAnswer('400 Bad Request', ['DPoP-Nonce: n-2', 'DPoP-Nonce: n-3'], '{"error":"invalid_dpop_proof"}'));
+      expect(await reason(redeem(ep.url, key))).toEqual({ name: 'IdJagError', code: 'invalid_dpop_proof', status: 400, dpopNonce: 'n-1' });
+      // Without a key, the same rule decides the nonce on the error.
+      answers.push(rawAskNonce(['DPoP-Nonce: n-1', 'DPoP-Nonce: n-1']), rawAskNonce(['DPoP-Nonce: n-1', 'DPoP-Nonce: n-2']));
+      expect([await reason(redeem(ep.url)), await reason(redeem(ep.url))]).toEqual([
+        { name: 'IdJagError', code: 'use_dpop_nonce', status: 400, dpopNonce: 'n-1' },
+        { name: 'IdJagError', code: 'use_dpop_nonce', status: 400, dpopNonce: undefined },
+      ]);
+    } finally {
+      await ep.close();
     }
   });
 });
