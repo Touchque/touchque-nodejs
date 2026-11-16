@@ -173,6 +173,31 @@ describe('withTouchque (Next.js / Fetch API)', () => {
     expect(await sent({ ip: ipFromVercel })).toBe('198.51.100.4');
   });
 
+  test('the first-time QR names the same address and User-Agent as the approval: never the leftmost X-Forwarded-For hop', async () => {
+    const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0';
+    const headers = { 'x-forwarded-for': '1.2.3.4, 203.0.113.9', 'x-real-ip': '198.51.100.4', 'user-agent': UA };
+    const sent = async (opts: Partial<Parameters<typeof withTouchque>[2]>) => {
+      api.calls.length = 0;
+      api.pendingSecrets.clear();
+      const h = withTouchque('SEND_MONEY', async () => Response.json({ ok: true }), {
+        client: api.client, user: (req) => req.headers.get('x-user'), ...opts,
+      });
+      expect((await (await call(h, headers)).json() as { touchque: { state: string } }).touchque.state).toBe('waiting'); // jane has a phone
+      const qr = await (await call(h, { ...headers, 'x-user': 'new@acme.com' })).json() as { touchque: { state: string } };
+      expect(qr.touchque.state).toBe('enroll');
+      const login = api.calls.find((c) => c.path === '/login/request')!.body;
+      const secret = api.calls.find((c) => c.path === '/auth/generate-secret')!.body;
+      expect({ clientIp: secret.clientIp, userAgent: secret.userAgent }).toEqual({ clientIp: login.clientIp, userAgent: login.userAgent });
+      expect(secret.userAgent).toBe(UA);
+      return secret.clientIp;
+    };
+    expect(await sent({})).toBeUndefined();
+    expect(await sent({ trustedProxyHops: 1 })).toBe('203.0.113.9');
+    expect(await sent({ trustedProxyHops: 2 })).toBe('1.2.3.4');
+    expect(await sent({ trustedProxyHops: 3 })).toBeUndefined();
+    expect(await sent({ ip: ipFromVercel })).toBe('198.51.100.4');
+  });
+
   test('errorBody: a refusal in the app\'s own shape, with the step; a string is sent as it is', async () => {
     const shaped = withTouchque('SEND_MONEY', async () => Response.json({ ok: true }), {
       client: api.client, user: (req) => req.headers.get('x-user'), errorBody: (r) => ({ message: r.message, code: r.code }),
@@ -305,5 +330,43 @@ describe('"Why?" case codes', () => {
     const again = await runGuard(api.client, { action: 'WIRE', user: 'jane@acme.com', token: (first.body as any).token });
     expect((first.body as any).touchque.caseCode).toBe('K7P-2QX');
     expect((again.body as any).touchque).toMatchObject({ state: 'waiting', caseCode: 'K7P-2QX' });
+  });
+});
+
+describe('2FA setup context: the guard names the browser on the first-time QR', () => {
+  test('tq.start(): ip and userAgent go with the QR as with the login request; empty ones are left out', async () => {
+    await api.client.start('LOGIN', { user: 'new@acme.com', ip: '203.0.113.7', userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' });
+    const login = api.calls.find((c) => c.path === '/login/request')!.body;
+    expect(api.calls.find((c) => c.path === '/auth/generate-secret')!.body)
+      .toEqual({ externalUsername: 'new@acme.com', clientIp: login.clientIp, userAgent: login.userAgent });
+    expect(login).toMatchObject({ clientIp: '203.0.113.7', userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' });
+
+    api.calls.length = 0;
+    api.pendingSecrets.clear();
+    await api.client.start('LOGIN', { user: 'new@acme.com', ip: '', userAgent: '' });
+    expect(api.calls.find((c) => c.path === '/login/request')!.body).not.toHaveProperty('clientIp');
+    expect(api.calls.find((c) => c.path === '/auth/generate-secret')!.body).toEqual({ externalUsername: 'new@acme.com' });
+  });
+
+  test('a renewed QR (about to expire, or not scanned) carries the browser of the request that renews it', async () => {
+    api.opts.secretTtlMs = 10_000;
+    try {
+      const first = await runGuard(api.client, { user: 'new@acme.com', action: 'LOGIN', ip: '203.0.113.7', userAgent: 'UA/1' });
+      const renewed = await runGuard(api.client, { user: 'new@acme.com', action: 'LOGIN', ip: '198.51.100.23', userAgent: 'UA/2', token: first.body!.token });
+      expect(renewed.body?.touchque.enroll?.qrCodeDataUrl).toBe('data:image/png;base64,QR2-new@acme.com');
+      const secrets = api.calls.filter((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset');
+      expect(secrets.map((c) => [c.path, c.body])).toEqual([
+        ['/auth/generate-secret', { externalUsername: 'new@acme.com', clientIp: '203.0.113.7', userAgent: 'UA/1' }],
+        ['/auth/generate-secret', { externalUsername: 'new@acme.com', clientIp: '198.51.100.23', userAgent: 'UA/2' }],
+        ['/auth/secret/reset', { externalUsername: 'new@acme.com', clientIp: '198.51.100.23', userAgent: 'UA/2' }],
+      ]);
+    } finally {
+      api.opts.secretTtlMs = undefined;
+    }
+  });
+
+  test('enroll: false makes no QR, so nothing is sent for one', async () => {
+    await runGuard(api.client, { user: 'new@acme.com', action: 'LOGIN', enroll: false, ip: '203.0.113.7', userAgent: 'UA/1' });
+    expect(api.calls.some((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset')).toBe(false);
   });
 });

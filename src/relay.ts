@@ -83,10 +83,11 @@ export interface TouchqueRelayOptions {
   rateLimit?: RateLimitOptions | false;
 
   /**
-   * End user's IP, for the per-IP limits and Touchque's risk checks. Default:
-   * none, unless `trustedProxyHops` is set. Use a preset such as
-   * `ipFromVercel` / `ipFromCloudflare`, or your own function reading a header
-   * your platform overwrites. Never the leftmost X-Forwarded-For hop.
+   * End user's IP, for the per-IP limits, Touchque's risk checks and the
+   * first-time QR's setup context. Default: none, unless `trustedProxyHops` is
+   * set. Use a preset such as `ipFromVercel` / `ipFromCloudflare`, or your own
+   * function reading a header your platform overwrites. Never the leftmost
+   * X-Forwarded-For hop.
    */
   ip?: (req: Request) => string | undefined;
 
@@ -287,8 +288,10 @@ export function touchqueRelay(tq: Touchque, options: TouchqueRelayOptions): (req
   const enrollStart: Handler = async (req) => {
     const userId = await requireUserId(req);
     if (typeof userId !== 'string') return userId;
+    // Setup context: the browser asking for the QR, read as POST /login reads it (`ip` / `trustedProxyHops`, else none).
+    const browser = { clientIp: ipOf(req), userAgent: userAgentOf(req) };
     try {
-      return json(await tq.auth.generateSecret({ externalUsername: userId }));
+      return json(await tq.auth.generateSecret({ externalUsername: userId, ...browser }));
     } catch (error) {
       // 409: a QR not scanned yet (safe to issue a new one) or a phone ALREADY
       // linked, which a plain session must never replace.
@@ -296,7 +299,7 @@ export function touchqueRelay(tq: Touchque, options: TouchqueRelayOptions): (req
         try {
           const current = await tq.auth.getUser({ externalUsername: userId });
           if (current.used || current.deviceId) return json({ error: 'already_linked', message: 'A phone is already linked to this account.' }, 409);
-          return json(await tq.auth.resetSecret({ externalUsername: userId }));
+          return json(await tq.auth.resetSecret({ externalUsername: userId, ...browser }));
         } catch (retryError) {
           return relayError(retryError);
         }

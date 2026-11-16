@@ -40,6 +40,15 @@ export interface TouchqueLogger {
 export interface GenerateSecretOptions {
   /** The user's unique identifier in YOUR system (email, userId, etc.) */
   externalUsername: string;
+  /**
+   * The IP address of the browser asking for the QR, as for a login request.
+   * Touchque records it with the new secret (never in the QR), and the phone
+   * shows where the QR was asked for before it links: see {@link SetupContext}.
+   * Sent only when given (not empty).
+   */
+  clientIp?: string;
+  /** The User-Agent of that browser (the phone shows its browser and device). Sent only when given (not empty). */
+  userAgent?: string;
 }
 
 export interface GenerateSecretResponse {
@@ -89,9 +98,59 @@ export interface ValidateSecretResponse {
   reason?: string;
   usedAt?: string;
   expiredAt?: string;
+  /**
+   * Where the QR was asked for, as the phone shows it before linking; null when
+   * Touchque has none (an older QR, a server before setup context, or no IP
+   * address or User-Agent named). `validateSecret` always sets it, read leniently
+   * (see `parseSetupContext`).
+   */
+  setupContext?: SetupContext | null;
 }
+
+/**
+ * 2FA setup context: where a first-time linking QR was asked for, recorded by
+ * Touchque from the request that asked for it (`clientIp`, `userAgent` on
+ * `generateSecret`), never put in the QR. The phone shows it before linking, so
+ * someone tricked into scanning another person's QR sees that person's city and
+ * device. Any field may be null.
+ */
+export interface SetupContext {
+  /** The IP address the QR was asked from, or null (none named, or one the phone does not show). */
+  ip: string | null;
+  /** Where that IP address is, or null when unknown. */
+  location: SetupLocation | null;
+  /** The browser and device from the User-Agent, or null. */
+  device: SetupDevice | null;
+  /** When the QR was asked for: ISO 8601, as Touchque sent it (null only if the answer had no such string). */
+  requestedAt: string | null;
+  /** True when that place is far from the phone, false when it is not, null when unknown. */
+  farFromPhone: boolean | null;
+}
+
+/** The place of a {@link SetupContext}'s IP address (GeoIP). */
+export interface SetupLocation {
+  city: string | null;
+  country: string | null;
+  /** ISO 3166-1 alpha-2, e.g. `DE`. */
+  countryCode: string | null;
+}
+
+/** The browser and device of a {@link SetupContext}, from the User-Agent. */
+export interface SetupDevice {
+  /** e.g. `Chrome`, `Safari`. */
+  browser: string | null;
+  /** e.g. `macOS`, `iOS`. */
+  os: string | null;
+  /** e.g. `iPhone`; null when the User-Agent does not say. */
+  model: string | null;
+}
+
 export interface ResetSecretOptions {
   externalUsername: string;
+  /** The IP address of the browser asking for the new QR, sent as `generateSecret` sends it: only when given (not empty). */
+  clientIp?: string;
+  /** The User-Agent of that browser, sent as `generateSecret` sends it: only when given (not empty). */
+  userAgent?: string;
 }
 
 export interface ResetSecretResponse {
@@ -1182,8 +1241,10 @@ export interface DeviceRiskSignal {
    * `device_tampered`, `device_virtual`, `device_geo_mismatch`, `device_many_accounts`,
    * `device_signup_burst`, `device_id_resets`, `device_many_countries`, `device_wrong_site`,
    * `device_report_replayed`, `device_private_window` (context only), `device_step_up_by_admin`,
-   * `device_identification_missing` (the page sent no identification, or one that does not verify).
-   * New codes are added in minor versions.
+   * `device_identification_missing` (the page sent no identification, or one that does not verify),
+   * `device_pointer_synthetic` (the pointer or a finger moved like software), `device_new_storage_burst`
+   * and `device_network_signup_burst` (many new browsers, or sign-ups, in a day from phones like this
+   * one on this network). New codes are added in minor versions.
    */
   code: string;
   text: string;

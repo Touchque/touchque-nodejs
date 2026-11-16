@@ -327,6 +327,32 @@ one): `runGuard` calls it when a poll on the first-time QR is about to start som
 is linked, or a new QR), so the relay can charge that like a new attempt. A handler that guards one route
 does not need it.
 
+### Setup context: where the first-time QR was asked for
+
+Before linking, the phone shows where the QR was asked for (city and country, browser and device, time), so
+someone tricked into scanning another person's QR sees that person's place and device. Touchque records it
+from the request that asks for the QR, never in the QR. The adapters send the browser's IP address and
+User-Agent with it, as for the approval (`runGuard` and `tq.start()` send your `ip` and `userAgent`); when you
+call `generateSecret` yourself, pass `clientIp` and `userAgent` from the request as for `login.request`.
+`resetSecret` takes the same two fields (a reset without them leaves the new QR without a context). `validateSecret`,
+the phone's public call, returns it as `setupContext`: null when the QR request named no browser and for an older QR;
+any field may be null. `farFromPhone` compares the QR's place with whoever calls `validateSecret`, so from your
+server it compares with your server, not the phone:
+
+```typescript
+const qr = await tq.auth.generateSecret({
+  externalUsername: req.user.email,
+  clientIp: req.ip,                  // as for login.request
+  userAgent: req.get('user-agent'),
+});
+
+// What the phone sees after scanning (it calls validateSecret itself):
+const { setupContext } = await tq.auth.validateSecret({ secret: qr.secret });
+// { ip: '203.0.113.7', location: { city: 'Berlin', country: 'Germany', countryCode: 'DE' },
+//   device: { browser: 'Safari', os: 'iOS', model: 'iPhone' }, requestedAt: '2026-11-16T09:30:00.000Z',
+//   farFromPhone: ... }   // measured against the caller's address: yours here, the phone's in the app
+```
+
 ## Passkeys (phishing-resistant)
 
 Push approval and offline codes stop password reuse and push fatigue, but a
@@ -955,6 +981,10 @@ test('a transfer waits for the approval on the phone', async () => {
 - Every user has a phone linked. `tq.unlink(user)` shows them the first-time QR instead
   (`new FakeTouchque({ linked: false })`: nobody has one); `tq.link(user)` is the phone scanning it.
   `tq.secretTtlMs` is how long a QR works (5 minutes).
+- `tq.setups`: each first-time QR (`user`, `secret`, `requestedAt`, `expiresAt`) with the `clientIp` and
+  `userAgent` your app sent. `tq.auth.validateSecret({ secret })` answers as the API does for the phone, with
+  `setupContext`: its GeoIP knows only `203.0.113.7` (Berlin) and `198.51.100.23` (New York), and
+  `tq.setupContextNull = true` answers null.
 - `new FakeTouchque({ numberMatch: true })`: pushes ask for the number `47`.
 - `tq.requests` (`id`, `user`, `type`, `details`, `referenceId`, `status`, `expiresAt`, …) and `tq.calls`
   (`method`, `path`, `body`): what your app asked Touchque, in order. Each request's `expiresAt` is 30 s after it

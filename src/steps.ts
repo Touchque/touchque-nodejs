@@ -77,7 +77,10 @@ export interface StartOptions {
   details?: LoginRequestDetails;
   /** Your own transaction id, bound to the approval. */
   referenceId?: string;
-  /** End user's IP / user agent (location and device shown on the phone). */
+  /**
+   * End user's IP / user agent (location and device shown on the phone): sent
+   * with the approval, and with a first-time QR as its setup context.
+   */
   ip?: string;
   userAgent?: string;
   /**
@@ -173,7 +176,8 @@ export async function start(r: Resources, action: string, opts: StartOptions): P
     if (err.status === 404 && (code === 'device_not_linked' || /linked device/i.test(err.message))) {
       // No QR may be shown here: say why, so a page stops instead of polling a step it cannot finish.
       if (opts.enroll === false) return { state: 'enroll', reason: 'enrollment_off' };
-      return enrollStep(r, opts.user);
+      // Setup context: the QR carries the same browser as the login request above.
+      return enrollStep(r, opts.user, { clientIp: opts.ip, userAgent: opts.userAgent });
     }
     if (err.status === 423) return { state: 'frozen', retryAfter: data.retryAfter, ...why };
     if (err.status === 429) return { state: 'rate_limited', retryAfter: data.retryAfter, ...why };
@@ -207,11 +211,13 @@ function whyOf(res: { caseCode?: unknown; reasons?: unknown }): Pick<Step, 'case
 
 /**
  * First-time linking: a fresh QR for a user with no phone. Never unlinks a phone:
- * a secret is only re-issued when the account is confirmed NOT linked.
+ * a secret is only re-issued when the account is confirmed NOT linked. `browser`
+ * (the request's IP address and User-Agent) goes with the new QR and with its
+ * renewal: the phone shows it before linking.
  */
-async function enrollStep(r: Resources, user: string): Promise<Step> {
+async function enrollStep(r: Resources, user: string, browser: { clientIp?: string; userAgent?: string }): Promise<Step> {
   try {
-    const gen = await r.auth.generateSecret({ externalUsername: user });
+    const gen = await r.auth.generateSecret({ externalUsername: user, ...browser });
     return { state: 'enroll', enroll: { qrCodeDataUrl: gen.qrCodeDataUrl, recoveryCodes: gen.recoveryCodes, ...qrExpiry(gen) } };
   } catch (err) {
     if (!(err instanceof TouchqueAPIError) || err.status !== 409) throw err;
@@ -221,7 +227,7 @@ async function enrollStep(r: Resources, user: string): Promise<Step> {
       return { state: 'enroll', reason: 'already_linked' };
     }
     // A QR was issued earlier and not scanned yet: issue a new one (no device to lose).
-    const reset = await r.auth.resetSecret({ externalUsername: user });
+    const reset = await r.auth.resetSecret({ externalUsername: user, ...browser });
     return { state: 'enroll', enroll: { qrCodeDataUrl: reset.qrCodeDataUrl as string, recoveryCodes: reset.recoveryCodes, ...qrExpiry(reset) } };
   }
 }

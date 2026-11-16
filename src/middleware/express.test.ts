@@ -553,3 +553,24 @@ describe('requireTouchque — no TQ_API_KEY / TQ_API_SECRET', () => {
     expect((await send(app, { amount: 5 })).status).toBe(202);
   });
 });
+
+describe('requireTouchque — 2FA setup context: the first-time QR names the request\'s browser', () => {
+  test('req.ip (as `trust proxy` says) and the User-Agent, as the approval gets them; the renewed QR those of the poll', async () => {
+    api.opts.secretTtlMs = 10_000; // within 15 s of its expiry: the next poll renews it
+    const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1';
+    const FIREFOX = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0';
+    const { app } = partnerApp();
+    app.set('trust proxy', 1);
+    const first = await send(app, { amount: 5 }, { 'X-Forwarded-For': '1.2.3.4, 203.0.113.9', 'User-Agent': IPHONE });
+    expect(first.body.touchque.enroll.qrCodeDataUrl).toBe('data:image/png;base64,QR-jane@acme.com');
+    const login = api.calls.find((c) => c.path === '/login/request')!.body;
+    expect(login).toMatchObject({ clientIp: '203.0.113.9', userAgent: IPHONE });
+    const poll = await send(app, { amount: 5 }, { 'X-Forwarded-For': '198.51.100.23', 'User-Agent': FIREFOX, 'x-touchque-token': first.body.token });
+    expect(poll.body.touchque.enroll.qrCodeDataUrl).toBe('data:image/png;base64,QR2-jane@acme.com');
+    expect(secretCalls().map((c) => [c.path, c.body])).toEqual([
+      ['/auth/generate-secret', { externalUsername: 'jane@acme.com', clientIp: '203.0.113.9', userAgent: IPHONE }],
+      ['/auth/generate-secret', { externalUsername: 'jane@acme.com', clientIp: '198.51.100.23', userAgent: FIREFOX }],
+      ['/auth/secret/reset', { externalUsername: 'jane@acme.com', clientIp: '198.51.100.23', userAgent: FIREFOX }],
+    ]);
+  });
+});

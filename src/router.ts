@@ -13,7 +13,7 @@
 //   }));
 //
 // Endpoints mounted (relative to wherever you app.use() this router):
-//   POST   /enroll/start                    (auth required) -> GenerateSecretResponse
+//   POST   /enroll/start                    (auth required) -> GenerateSecretResponse (with the browser's IP / User-Agent, as /login sends them)
 //   GET    /enroll/status                   (auth required) -> { linked, used, deviceId }
 //   POST   /login                           (pre-auth) -> 202 { touchque: step, token } until approved (same contract as requireTouchque)
 //   POST   /offline/challenge               (pre-auth, body.externalUsername) -> QR for a phone with no internet
@@ -261,8 +261,10 @@ export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Ro
   router.post('/enroll/start', async (req, res) => {
     const userId = requireUserId(req, res, getUserId);
     if (!userId) return;
+    // Setup context: the browser asking for the QR, read as POST /login reads it (`req.ip` follows `trust proxy`).
+    const browser = { clientIp: req.ip, userAgent: req.get('user-agent') };
     try {
-      res.json(await tq.auth.generateSecret({ externalUsername: userId }));
+      res.json(await tq.auth.generateSecret({ externalUsername: userId, ...browser }));
     } catch (error) {
       const err = error as { status?: number };
       // 409: either a QR was issued and not scanned yet (safe to issue a new
@@ -276,7 +278,7 @@ export function touchqueRouter(tq: Touchque, options: TouchqueRouterOptions): Ro
             res.status(409).json({ error: 'already_linked', message: 'A phone is already linked to this account.' });
             return;
           }
-          res.json(await tq.auth.resetSecret({ externalUsername: userId }));
+          res.json(await tq.auth.resetSecret({ externalUsername: userId, ...browser }));
           return;
         } catch (retryError) {
           sendRelayError(res, retryError);

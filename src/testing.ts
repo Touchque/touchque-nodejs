@@ -13,14 +13,16 @@
 //   tq.uninstall();
 //
 // It answers the calls the step-up guard makes (approval requests, first-time
-// linking, offline codes, silent sign-in checks) and defining action types.
+// linking, offline codes, silent sign-in checks), defining action types, and
+// the phone's check of a first-time QR (validateSecret, with its setup context).
 // Any other call throws TouchqueAPIError 404.
 //
 // Its own entry, which loads the main entry ('./index') at run time and bundles
 // nothing else of it (see tsup.config.ts): so both share one Touchque class, its
 // errors and the default client. Import values from './index' only.
 
-import { Touchque, setDefaultClient, type TouchqueLogger } from './index';
+import * as net from 'net';
+import { Touchque, setDefaultClient, type TouchqueLogger, type SetupContext, type SetupDevice, type SetupLocation } from './index';
 import type { TestingHooks } from './internal';
 import type { TransportCall, TransportAnswer } from './core/HttpClient';
 
@@ -43,6 +45,21 @@ export interface FakeApprovalRequest {
    * 30 s after it was made (ISO 8601): its status answer and every poll carry it; set a later time to
    * extend it. The fake never expires a request by time: call `expire()`.
    */
+  expiresAt: string;
+}
+
+/** A first-time linking QR made through a FakeTouchque (`generateSecret`, `resetSecret`). */
+export interface FakeSetup {
+  user: string;
+  /** The secret in the QR: what the phone sends to `validateSecret`. */
+  secret: string;
+  /** The `clientIp` your app sent with it, as sent, or null. */
+  clientIp: string | null;
+  /** The `userAgent` your app sent with it, as sent, or null. */
+  userAgent: string | null;
+  /** When it was made (ISO 8601): its setup context's `requestedAt`. */
+  requestedAt: string;
+  /** When the QR stops working (ISO 8601); `validateSecret` answers 410 after it. Set an earlier time to expire it. */
   expiresAt: string;
 }
 
@@ -81,6 +98,54 @@ function hooks(): TestingHooks {
 const iso = (ms: number) => new Date(ms).toISOString();
 const ok = (body: unknown): TransportAnswer => ({ status: 200, body });
 
+// 2FA setup context, kept and shown as the API does it: clientIp only when it is an IP address and not a
+// loopback one (a port, brackets and ::ffff: dropped), userAgent without control characters, at most 512
+// characters; neither kept → null. A private, carrier-grade NAT, unique-local or link-local address is not
+// shown (ip null). GeoIP knows two documentation addresses; farFromPhone is unknown (null).
+const keptIp = (sent: string | null): string | null => {
+  if (!sent) return null;
+  let ip = sent.trim().replace(/^(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}$/, '$1').replace(/^\[([^\]]+)\](?::\d{1,5})?$/, '$1');
+  if (/^::ffff:/i.test(ip) && net.isIPv4(ip.slice(7))) ip = ip.slice(7);
+  return net.isIP(ip) && ip !== '::1' && !/^127\./.test(ip) ? ip : null;
+};
+const keptUserAgent = (sent: string | null): string | null => {
+  // eslint-disable-next-line no-control-regex
+  const text = sent ? sent.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
+  return text ? text.slice(0, 512) : null;
+};
+const NOT_SHOWN: Array<[string, number, 'ipv4' | 'ipv6']> = [
+  ['10.0.0.0', 8, 'ipv4'], ['172.16.0.0', 12, 'ipv4'], ['192.168.0.0', 16, 'ipv4'], ['100.64.0.0', 10, 'ipv4'],
+  ['169.254.0.0', 16, 'ipv4'], ['fc00::', 7, 'ipv6'], ['fe80::', 10, 'ipv6'],
+];
+const shownIp = (ip: string | null): string | null => {
+  if (!ip) return null;
+  const list = new net.BlockList();
+  for (const [address, prefix, type] of NOT_SHOWN) list.addSubnet(address, prefix, type);
+  return list.check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4') ? null : ip;
+};
+const SETUP_PLACES = new Map<string, SetupLocation>([
+  ['203.0.113.7', { city: 'Berlin', country: 'Germany', countryCode: 'DE' }],
+  ['198.51.100.23', { city: 'New York', country: 'United States', countryCode: 'US' }],
+]);
+/** The API's names from a browser's User-Agent; model only for an iPhone or iPad. Not a browser, or nothing known → null. */
+const setupDevice = (ua: string | null): SetupDevice | null => {
+  if (!ua || !/^Mozilla\//.test(ua)) return null;
+  const browser = /EdgA?\/|EdgiOS\//.test(ua) ? 'Edge' : /Firefox\/|FxiOS\//.test(ua) ? 'Firefox'
+    : /CriOS\/|Chrome\//.test(ua) ? 'Chrome' : /Version\/[\d.]+.*Safari\//.test(ua) ? 'Safari' : null;
+  const os = /iPad/.test(ua) ? 'iPadOS' : /iPhone|iPod/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android'
+    : /Windows NT/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : null;
+  if (!browser && !os) return null;
+  return { browser, os, model: /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : null };
+};
+function setupContextOf(s: FakeSetup): SetupContext | null {
+  const clientIp = keptIp(s.clientIp);
+  const userAgent = keptUserAgent(s.userAgent);
+  if (!clientIp && !userAgent) return null;
+  const ip = shownIp(clientIp);
+  const place = ip ? SETUP_PLACES.get(ip) : undefined;
+  return { ip, location: place ? { ...place } : null, device: setupDevice(userAgent), requestedAt: s.requestedAt, farFromPhone: null };
+}
+
 /**
  * A Touchque client that answers in memory, for your app's tests.
  *
@@ -92,6 +157,10 @@ const ok = (body: unknown): TransportAnswer => ({ status: 200, body });
  * request (or one by its id), or set `autoApprove` to approve every request as
  * it is made. `requests` lists the approval requests, `calls` every API call,
  * in order. The offline code is `'ABCD123'` and the time-based code `'123456'`.
+ *
+ * `setups` lists the first-time QRs with the browser your app named for each
+ * (`clientIp`, `userAgent`); `auth.validateSecret({ secret })` answers as the
+ * API does for the phone that scanned one, with its `setupContext`.
  */
 export class FakeTouchque extends Touchque {
   /** The code the phone shows for an offline QR (`X-Touchque-Code`). */
@@ -106,10 +175,14 @@ export class FakeTouchque extends Touchque {
   numberMatch: boolean;
   /** How long a first-time QR works, in ms (5 minutes, like the API). */
   secretTtlMs = 300_000;
+  /** `validateSecret` answers `setupContext: null`, as an older QR or a server before setup context does. */
+  setupContextNull = false;
   /** The approval requests made so far, oldest first. */
   readonly requests: FakeApprovalRequest[] = [];
   /** Every API call so far, oldest first. */
   readonly calls: FakeCall[] = [];
+  /** The first-time QRs made so far (`generateSecret`, `resetSecret`), oldest first. */
+  readonly setups: FakeSetup[] = [];
 
   readonly #linked = new Set<string>();
   readonly #unlinked = new Set<string>();
@@ -117,6 +190,8 @@ export class FakeTouchque extends Touchque {
   readonly #pending = new Map<string, number>();
   readonly #challenges = new Map<string, { user: string; type: string; used: boolean; requestId?: string }>();
   readonly #actionTypes = new Map<string, Record<string, unknown>>();
+  /** When `validateSecret` first saw a secret's user linked: secret → ISO 8601. */
+  readonly #usedAt = new Map<string, string>();
   #seq = 0;
   /** What install() replaced, while installed. */
   #replaced: { client: Touchque | undefined } | null = null;
@@ -127,6 +202,7 @@ export class FakeTouchque extends Touchque {
     ['POST', /^\/login\/([^/]+)\/consume$/, (_b, id) => this.#loginConsume(id)],
     ['POST', /^\/auth\/generate-secret$/, (b) => this.#generateSecret(b)],
     ['POST', /^\/auth\/secret\/reset$/, (b) => this.#resetSecret(b)],
+    ['POST', /^\/auth\/secret\/validate$/, (b) => this.#validateSecret(b)],
     ['GET', /^\/users\/([^/]+)$/, (_b, user) => this.#getUser(user)],
     ['POST', /^\/offline\/challenge$/, (b) => this.#offlineChallenge(b)],
     ['POST', /^\/offline\/verify$/, (b) => this.#offlineVerify(b)],
@@ -272,12 +348,21 @@ export class FakeTouchque extends Touchque {
     return ok({ consumed: true, requestId: r.id, approvalProof: null, ...this.#approval(r) });
   }
 
-  #newSecret(user: string): Body {
+  /** A new first-time QR for `user`, kept in `setups` with the browser the app named (`b.clientIp`, `b.userAgent`). */
+  #newSecret(user: string, b: Body): Body {
     const seq = ++this.#seq;
-    const expires = Date.now() + this.secretTtlMs;
+    const now = Date.now();
+    const expires = now + this.secretTtlMs;
     this.#pending.set(user, expires);
+    const secret = `S${seq}`;
+    this.setups.push({
+      user, secret,
+      clientIp: typeof b.clientIp === 'string' ? b.clientIp : null,
+      userAgent: typeof b.userAgent === 'string' ? b.userAgent : null,
+      requestedAt: iso(now), expiresAt: iso(expires),
+    });
     return {
-      secret: `S${seq}`, qrCodeDataUrl: `data:image/png;base64,QR${seq}-${user}`, externalUsername: user,
+      secret, qrCodeDataUrl: `data:image/png;base64,QR${seq}-${user}`, externalUsername: user,
       expiresAt: iso(expires), ttlMs: this.secretTtlMs, recoveryCodes: [`r${seq}`],
     };
   }
@@ -286,7 +371,7 @@ export class FakeTouchque extends Touchque {
     const user = String(b.externalUsername ?? '');
     if (this.isLinked(user)) return { status: 409, body: { error: 'already linked' } };
     if (this.#pending.has(user)) return { status: 409, body: { error: 'Secret already generated' } };
-    return ok(this.#newSecret(user));
+    return ok(this.#newSecret(user, b));
   }
 
   #resetSecret(b: Body): TransportAnswer {
@@ -294,7 +379,40 @@ export class FakeTouchque extends Touchque {
     const user = String(b.externalUsername ?? '');
     this.#unlinked.add(user);
     this.#linked.delete(user);
-    return ok({ success: true, ...this.#newSecret(user) });
+    return ok({ success: true, ...this.#newSecret(user, b) });
+  }
+
+  /**
+   * The phone after scanning (public on the API: no key needed). Like the API: 400 without a secret;
+   * 404 for one never made, replaced by a newer QR for its user, or gone (`unlink()`); 409 once its user
+   * is linked; 410 after its `expiresAt`; else valid, with the workspace and the setup context.
+   */
+  #validateSecret(b: Body): TransportAnswer {
+    const secret = typeof b.secret === 'string' ? b.secret : '';
+    if (!secret) return { status: 400, body: { error: 'secret is required' } };
+    const notFound: TransportAnswer = { status: 404, body: { valid: false, message: 'Secret not found - invalid code', reason: 'not_found' } };
+    const s = this.setups.find((x) => x.secret === secret);
+    if (!s || this.#latestSetup(s.user) !== s) return notFound;
+    if (this.isLinked(s.user)) {
+      const usedAt = this.#usedAt.get(secret) ?? iso(Date.now());
+      this.#usedAt.set(secret, usedAt);
+      return { status: 409, body: { valid: false, message: 'This secret has already been used', reason: 'already_used', usedAt } };
+    }
+    if (!this.#pending.has(s.user)) return notFound;
+    if (Date.now() > Date.parse(s.expiresAt)) {
+      return { status: 410, body: { valid: false, message: 'Secret has expired - generate a new code', reason: 'expired', expiredAt: s.expiresAt } };
+    }
+    return ok({
+      valid: true, externalUsername: s.user, integrationId: 'int-1',
+      integration: { companyName: 'Fake workspace', icon: 'key-outline', color: '#007AFF', logo: null, logoDark: null, logoVersion: null },
+      setupContext: this.setupContextNull ? null : setupContextOf(s),
+    });
+  }
+
+  /** The newest first-time QR made for `user`. */
+  #latestSetup(user: string): FakeSetup | undefined {
+    for (let i = this.setups.length - 1; i >= 0; i -= 1) if (this.setups[i].user === user) return this.setups[i];
+    return undefined;
   }
 
   #getUser(user: string): TransportAnswer {

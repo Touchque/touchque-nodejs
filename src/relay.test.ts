@@ -2,7 +2,7 @@
 // driven with Request objects against the fake Touchque API.
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { startFakeApi, FakeApi } from './testing/fakeApi';
-import { touchqueRelay, TouchqueRelayOptions } from './index';
+import { touchqueRelay, TouchqueRelayOptions, ipFromVercel } from './index';
 import type { Touchque } from './index';
 
 type Relay = (req: Request) => Promise<Response>;
@@ -371,5 +371,46 @@ describe('touchqueRelay — passkeys', () => {
     const res = await call(relayFor(tq), 'DELETE', '/passkey/credentials/cred%201');
     expect(await res.json()).toEqual({ deleted: true });
     expect(tq.webauthn.deleteCredential).toHaveBeenCalledWith('cred 1', { externalUsername: 'user@example.com' });
+  });
+});
+
+describe('touchqueRelay — 2FA setup context: POST /enroll/start names the browser as POST /login does', () => {
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0';
+  const headers = { 'X-Forwarded-For': '1.2.3.4, 203.0.113.9', 'X-Real-IP': '198.51.100.4', 'User-Agent': UA };
+  const browserOf = (body: Record<string, unknown>) => ({ clientIp: body.clientIp, userAgent: body.userAgent });
+
+  /** POST /login, then POST /enroll/start twice (the QR, then a reset): the address all of them sent. */
+  const sent = async (options: Partial<TouchqueRelayOptions>): Promise<unknown> => {
+    api.calls.length = 0;
+    api.pendingSecrets.clear();
+    const relay = relayFor(api.client, { rateLimit: false, getUserId: () => 'new@example.com', getLoginUser: () => 'user@example.com', ...options });
+    expect((await post(relay, '/login', {}, headers)).status).toBe(202);
+    expect((await post(relay, '/enroll/start', {}, headers)).status).toBe(200);
+    expect((await post(relay, '/enroll/start', {}, headers)).status).toBe(200);
+    const login = api.calls.find((c) => c.path === '/login/request')!.body;
+    const secrets = api.calls.filter((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset');
+    expect(secrets.map((c) => c.path)).toEqual(['/auth/generate-secret', '/auth/generate-secret', '/auth/secret/reset']);
+    for (const c of secrets) expect(browserOf(c.body)).toEqual(browserOf(login));
+    for (const c of secrets) expect(c.body.userAgent).toBe(UA);
+    return login.clientIp;
+  };
+
+  test('ip / trustedProxyHops as for login: never the leftmost X-Forwarded-For hop, and no address without a source', async () => {
+    expect(await sent({})).toBeUndefined();
+    expect(api.calls.find((c) => c.path === '/auth/generate-secret')!.body).not.toHaveProperty('clientIp');
+    expect(await sent({ trustedProxyHops: 1 })).toBe('203.0.113.9');
+    expect(await sent({ trustedProxyHops: 2 })).toBe('1.2.3.4');
+    expect(await sent({ trustedProxyHops: 3 })).toBeUndefined();
+    expect(await sent({ ip: ipFromVercel })).toBe('198.51.100.4');
+    expect(await sent({ ip: ipFromVercel, trustedProxyHops: 1 })).toBe('198.51.100.4'); // `ip` wins
+  });
+
+  test('no User-Agent header: none is sent; a 401 sends nothing', async () => {
+    const relay = relayFor(api.client, { getUserId: () => 'new@example.com', ip: () => '203.0.113.7' });
+    expect((await relay(new Request('http://app.test/touchque/enroll/start', { method: 'POST' }))).status).toBe(200);
+    expect(api.calls.find((c) => c.path === '/auth/generate-secret')!.body).toEqual({ externalUsername: 'new@example.com', clientIp: '203.0.113.7' });
+    api.calls.length = 0;
+    expect((await post(relayFor(api.client, { getUserId: () => undefined, ip: () => '203.0.113.7' }), '/enroll/start', {}, headers)).status).toBe(401);
+    expect(api.calls).toHaveLength(0);
   });
 });

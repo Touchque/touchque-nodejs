@@ -190,6 +190,111 @@ describe('FakeTouchque', () => {
   });
 });
 
+describe('FakeTouchque — 2FA setup context', () => {
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1';
+  const FIREFOX = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0';
+  /** A partner app behind one proxy of its own: req.ip is the address that proxy saw. */
+  const proxiedApp = (tq: FakeTouchque) => makeApp(tq).set('trust proxy', 1);
+  const refusal = (tq: FakeTouchque, secret: string) => tq.auth.validateSecret({ secret })
+    .then(() => null, (e: TouchqueAPIError) => [e.status, e.data.reason ?? e.data.error]);
+
+  test('setups keeps the browser the guard named for the first-time QR; validateSecret shows it as the phone does', async () => {
+    const tq = new FakeTouchque();
+    tq.unlink('new@acme.com');
+    const first = await send(proxiedApp(tq), undefined, 'new@acme.com', { 'X-Forwarded-For': '1.2.3.4, 203.0.113.7', 'User-Agent': IPHONE });
+    expect(first.body.touchque.state).toBe('enroll');
+    expect(tq.setups).toEqual([{
+      user: 'new@acme.com', secret: expect.any(String), clientIp: '203.0.113.7', userAgent: IPHONE,
+      requestedAt: expect.any(String), expiresAt: first.body.touchque.enroll.expiresAt,
+    }]);
+    const [setup] = tq.setups;
+    expect(Date.parse(setup.requestedAt)).toBeLessThanOrEqual(Date.now());
+    expect(await tq.auth.validateSecret({ secret: setup.secret })).toEqual({
+      valid: true, externalUsername: 'new@acme.com', integrationId: 'int-1',
+      integration: { companyName: 'Fake workspace', icon: 'key-outline', color: '#007AFF', logo: null, logoDark: null, logoVersion: null },
+      setupContext: {
+        ip: '203.0.113.7', location: { city: 'Berlin', country: 'Germany', countryCode: 'DE' },
+        device: { browser: 'Safari', os: 'iOS', model: 'iPhone' }, requestedAt: setup.requestedAt, farFromPhone: null,
+      },
+    });
+    expect(tq.calls.at(-1)).toEqual({ method: 'POST', path: '/auth/secret/validate', body: { secret: setup.secret } });
+  });
+
+  test('a renewed QR keeps the browser of the poll that renewed it', async () => {
+    const tq = new FakeTouchque();
+    tq.secretTtlMs = 1000; // within 15 s of its expiry from the start
+    tq.unlink('late@acme.com');
+    const app = proxiedApp(tq);
+    const late = (await send(app, undefined, 'late@acme.com', { 'X-Forwarded-For': '203.0.113.7', 'User-Agent': IPHONE })).body;
+    const renewed = (await send(app, late.token, 'late@acme.com', { 'X-Forwarded-For': '198.51.100.23', 'User-Agent': FIREFOX })).body;
+    expect(renewed.touchque.enroll.qrCodeDataUrl).not.toBe(late.touchque.enroll.qrCodeDataUrl);
+    expect(tq.setups.map((x) => [x.clientIp, x.userAgent])).toEqual([['203.0.113.7', IPHONE], ['198.51.100.23', FIREFOX]]);
+    expect((await tq.auth.validateSecret({ secret: tq.setups[1].secret })).setupContext).toMatchObject({
+      ip: '198.51.100.23', location: { city: 'New York', country: 'United States', countryCode: 'US' }, device: { browser: 'Firefox', os: 'Windows', model: null },
+    });
+    expect(await refusal(tq, tq.setups[0].secret)).toEqual([404, 'not_found']); // replaced by the new QR
+  });
+
+  test('kept and shown as the API does: no loopback or private address, port and ::ffff: dropped, no device for a non-browser', async () => {
+    const tq = new FakeTouchque({ linked: false });
+    const contextFor = async (clientIp?: string, userAgent?: string) => {
+      const { secret } = await tq.auth.generateSecret({ externalUsername: `u${tq.setups.length}@acme.com`, clientIp, userAgent });
+      return (await tq.auth.validateSecret({ secret })).setupContext;
+    };
+    expect(await contextFor()).toBeNull();
+    expect(await contextFor('127.0.0.1')).toBeNull();
+    expect(await contextFor('::ffff:127.0.0.1', '')).toBeNull();
+    expect(await contextFor('::ffff:198.51.100.23', FIREFOX)).toMatchObject({
+      ip: '198.51.100.23', location: { city: 'New York', country: 'United States', countryCode: 'US' }, device: { browser: 'Firefox', os: 'Windows', model: null },
+    });
+    expect(await contextFor(' 203.0.113.7:51234 ')).toMatchObject({ ip: '203.0.113.7', location: { city: 'Berlin' }, device: null, farFromPhone: null });
+    expect(await contextFor('[2001:db8::1]:443')).toMatchObject({ ip: '2001:db8::1', location: null });
+    expect(await contextFor('192.168.1.20', IPHONE)).toMatchObject({ ip: null, location: null, device: { browser: 'Safari', os: 'iOS', model: 'iPhone' } });
+    expect(await contextFor('not an address', 'curl/8.4.0')).toMatchObject({ ip: null, location: null, device: null });
+    expect(await contextFor(undefined, `\u0001${IPHONE}\u007f`)).toMatchObject({ ip: null, device: { browser: 'Safari', os: 'iOS' } });
+    // Recorded as the app sent them, whatever the phone is shown.
+    expect(tq.setups.slice(1, 3).map((x) => x.clientIp)).toEqual(['127.0.0.1', '::ffff:127.0.0.1']);
+    tq.setupContextNull = true; // an older QR, or a server before setup context
+    expect(await contextFor('203.0.113.7', IPHONE)).toBeNull();
+  });
+
+  test('validateSecret answers like the API: 400, 404 (unknown, replaced, gone), 409 once linked, 410 once expired', async () => {
+    const tq = new FakeTouchque({ linked: false });
+    expect(await refusal(tq, '')).toEqual([400, 'secret is required']);
+    expect(await refusal(tq, 'nope')).toEqual([404, 'not_found']);
+
+    const first = await tq.auth.generateSecret({ externalUsername: 'a@acme.com' });
+    const reset = await tq.auth.resetSecret({ externalUsername: 'a@acme.com' });
+    expect(await refusal(tq, first.secret)).toEqual([404, 'not_found']);
+    expect(await tq.auth.validateSecret({ secret: reset.secret })).toMatchObject({ valid: true, externalUsername: 'a@acme.com', setupContext: null });
+    tq.link('a@acme.com');
+    expect(await refusal(tq, reset.secret)).toEqual([409, 'already_used']);
+
+    const late = await tq.auth.generateSecret({ externalUsername: 'b@acme.com' });
+    tq.setups.at(-1)!.expiresAt = new Date(Date.now() - 1000).toISOString();
+    expect(await refusal(tq, late.secret)).toEqual([410, 'expired']);
+
+    const gone = await tq.auth.generateSecret({ externalUsername: 'c@acme.com' });
+    tq.unlink('c@acme.com'); // the QR is gone
+    expect(await refusal(tq, gone.secret)).toEqual([404, 'not_found']);
+  });
+
+  test('generate and reset answer as before, and record what was sent', async () => {
+    const tq = new FakeTouchque({ linked: false });
+    const gen = await tq.auth.generateSecret({ externalUsername: 'a@acme.com', clientIp: '203.0.113.7' });
+    expect(Object.keys(gen)).toEqual(['secret', 'qrCodeDataUrl', 'externalUsername', 'expiresAt', 'ttlMs', 'recoveryCodes']);
+    await expect(tq.auth.generateSecret({ externalUsername: 'a@acme.com', userAgent: FIREFOX })).rejects.toMatchObject({ status: 409 });
+    const reset = await tq.auth.resetSecret({ externalUsername: 'a@acme.com', userAgent: FIREFOX });
+    expect(Object.keys(reset)).toEqual(['success', 'secret', 'qrCodeDataUrl', 'externalUsername', 'expiresAt', 'ttlMs', 'recoveryCodes']);
+    expect(tq.calls.map((c) => c.body)).toEqual([
+      { externalUsername: 'a@acme.com', clientIp: '203.0.113.7' },
+      { externalUsername: 'a@acme.com', userAgent: FIREFOX },
+      { externalUsername: 'a@acme.com', userAgent: FIREFOX },
+    ]);
+    expect(tq.setups.map((x) => [x.secret, x.clientIp, x.userAgent])).toEqual([[gen.secret, '203.0.113.7', null], [reset.secret, null, FIREFOX]]);
+  });
+});
+
 // The README's "Testing your routes" example, as written there.
 describe('README: Testing your routes', () => {
   const app = express();

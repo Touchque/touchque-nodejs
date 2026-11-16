@@ -598,3 +598,56 @@ describe('touchqueRouter — adding a passkey', () => {
     expect(api.calls.filter((c) => c.path === '/webauthn/register/options' && c.body.approvalRequestId)).toHaveLength(0);
   });
 });
+
+describe('touchqueRouter — 2FA setup context: POST /enroll/start names the browser as POST /login does', () => {
+  const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15';
+  const browserOf = (body: Record<string, unknown>) => ({ clientIp: body.clientIp, userAgent: body.userAgent });
+
+  test('the QR, and the new one for an unscanned QR, carry req.ip and the User-Agent', async () => {
+    const tq = fakeTq({ auth: { generateSecret: vi.fn(async () => { throw { status: 409 }; }) } });
+    const res = await request(fixedIpApp(tq, {})).post('/touchque/enroll/start').set('X-Forwarded-For', '203.0.113.7').set('User-Agent', UA);
+    expect(res.status).toBe(200);
+    const sent = { externalUsername: 'u', clientIp: '203.0.113.7', userAgent: UA };
+    expect(tq.auth.generateSecret).toHaveBeenCalledWith(sent);
+    expect(tq.auth.resetSecret).toHaveBeenCalledWith(sent);
+  });
+
+  test('a linked phone is still never replaced: only the generate call, with the browser', async () => {
+    const tq = fakeTq({
+      auth: { generateSecret: vi.fn(async () => { throw { status: 409 }; }), getUser: vi.fn(async () => ({ used: true, deviceId: 'phone' })) },
+    });
+    const res = await request(fixedIpApp(tq, {})).post('/touchque/enroll/start').set('X-Forwarded-For', '203.0.113.7').set('User-Agent', UA);
+    expect(res.status).toBe(409);
+    expect(tq.auth.generateSecret).toHaveBeenCalledWith({ externalUsername: 'u', clientIp: '203.0.113.7', userAgent: UA });
+    expect(tq.auth.resetSecret).not.toHaveBeenCalled();
+  });
+
+  test('the same address and User-Agent as POST /login under every `trust proxy` setting', async () => {
+    const api = await startFakeApi();
+    try {
+      api.linked.add('user@example.com');
+      const headers = { 'X-Forwarded-For': '1.2.3.4, 203.0.113.9', 'User-Agent': UA };
+      // No trust: the socket's address. One hop or a trusted subnet: the address the proxy saw, never the leftmost hop.
+      for (const [trust, expected] of [[false, /127\.0\.0\.1$/], [1, '203.0.113.9'], ['loopback', '203.0.113.9'], [2, '1.2.3.4']] as const) {
+        api.calls.length = 0;
+        api.pendingSecrets.clear();
+        const app = express();
+        if (trust !== false) app.set('trust proxy', trust);
+        app.use(express.json());
+        app.use('/touchque', touchqueRouter(api.client, { getUserId: () => 'new@example.com', getLoginUser: () => 'user@example.com', rateLimit: false }));
+        expect((await request(app).post('/touchque/login').set(headers).send({})).status).toBe(202);
+        expect((await request(app).post('/touchque/enroll/start').set(headers)).status).toBe(200);
+        expect((await request(app).post('/touchque/enroll/start').set(headers)).status).toBe(200); // not scanned yet: a reset
+        const login = api.calls.find((c) => c.path === '/login/request')!.body;
+        const secrets = api.calls.filter((c) => c.path === '/auth/generate-secret' || c.path === '/auth/secret/reset');
+        expect(secrets.map((c) => c.path)).toEqual(['/auth/generate-secret', '/auth/generate-secret', '/auth/secret/reset']);
+        for (const c of secrets) expect(browserOf(c.body)).toEqual(browserOf(login));
+        expect(login.userAgent).toBe(UA);
+        if (typeof expected === 'string') expect(login.clientIp).toBe(expected);
+        else expect(login.clientIp).toMatch(expected);
+      }
+    } finally {
+      await api.close();
+    }
+  });
+});

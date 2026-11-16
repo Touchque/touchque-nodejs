@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [5.4.0] — 2026-11-16
+
+### Added
+- **2FA setup context: the phone shows where a first-time QR was asked for.** Touchque records the browser that asked for the QR (never in the QR), and the phone shows its city and country, browser and device and the time before it links, so someone tricked into scanning another person's QR sees that person's place and device.
+  - `auth.generateSecret` and `auth.resetSecret` take optional `clientIp` and `userAgent`, sent next to `externalUsername` by the rule of `login.request`: only when given and not empty, as given (no trimming, no length cap).
+  - The adapters send them with the QR from the same request, read exactly as for the approval: the guard's first-time QR and its renewal about 15 s before expiry (`requireTouchque`, `withTouchque`, `runGuard`, `tq.start()` with `ip` / `userAgent`, and `POST /login` of `touchqueRouter` and `touchqueRelay`), and `POST /enroll/start` of `touchqueRouter` (`req.ip`, which follows Express `trust proxy`, and the `User-Agent` header) and `touchqueRelay` (`ip` or `trustedProxyHops`, never the leftmost `X-Forwarded-For` hop; no address without one). Login requests are unchanged.
+  - `auth.validateSecret` returns `setupContext`: a `SetupContext` (`ip`; `location`, a `SetupLocation` with `city`, `country`, `countryCode`; `device`, a `SetupDevice` with `browser`, `os`, `model`; `requestedAt`, the ISO 8601 string as sent; `farFromPhone`), or null for an older QR or a server before this. It is read leniently by `parseSetupContext` (exported): a missing or null field, or one of another type, is null, unknown fields are dropped, and nothing throws. The new types are exported with the other response types.
+  - `@touchque/node/testing`: `FakeTouchque.setups` (`FakeSetup[]`, the type exported from `@touchque/node/testing`) lists each first-time QR (`user`, `secret`, `requestedAt`, `expiresAt`) with the `clientIp` and `userAgent` your app sent; `validateSecret` is answered like the API (400 without a secret, 404 for one unknown, replaced or gone, 409 `already_used` once linked, 410 `expired`, else the workspace and `setupContext`, with the API's rules for which address and device it shows); `setupContextNull` answers null. Its other answers are unchanged.
+  - README: "Setup context: where the first-time QR was asked for", and `tq.setups` / `validateSecret` under "Testing your routes".
+
+### Changed
+- Docs: `DeviceRiskSignal.code` lists the codes the API now returns too: `device_pointer_synthetic`, `device_new_storage_burst` and `device_network_signup_burst` (phones are told apart only by their stored id and key since 2026-11-15, so the risk engine counts new browsers and sign-ups per kind of phone and network). No code change.
+
 ## [5.3.0] — 2026-11-15
 
 ### Added
