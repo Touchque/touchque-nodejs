@@ -252,6 +252,8 @@ export class HttpClient {
         caseCode: typeof data.caseCode === 'string' ? data.caseCode : undefined,
         route: typeof data.route === 'string' ? data.route : undefined,
         feature: typeof data.feature === 'string' ? data.feature : undefined,
+        field: typeof data.field === 'string' ? data.field : undefined,
+        count: typeof data.count === 'number' ? data.count : undefined,
       });
     }
     return new TouchqueAPIError(500, {

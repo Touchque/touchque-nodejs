@@ -1071,6 +1071,10 @@ export interface TouchqueErrorData {
   route?: string;
   /** The feature a `feature_not_in_plan` / `feature_read_only` / `feature_off` refusal is about (`device_risk`…). */
   feature?: string;
+  /** Touchque Login Management API: the request field a refusal is about (`passkeyDomain`, `url`, `enabled`…). */
+  field?: string;
+  /** `passkeys_exist`: how many customer passkeys the change would leave behind. */
+  count?: number;
 }
 
 // ─── Help desk (assist sessions) ─────────────────────────────────

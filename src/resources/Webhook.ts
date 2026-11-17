@@ -45,6 +45,31 @@ function canonicalize(payload: Record<string, unknown>): string {
   return JSON.stringify(sorted);
 }
 
+/** An unpaired UTF-16 surrogate: a high one with no low one after it, or a low one with no high one before it. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * Parsed JSON with each unpaired UTF-16 surrogate in its strings and member names replaced by U+FFFD (what
+ * `String.prototype.toWellFormed` does). JSON.stringify writes one as an escape (`\ud800`), so a signed body can
+ * carry one (a password a customer typed, forwarded by a user-store request), and a string holding one cannot be
+ * encoded as UTF-8. Members are defined, never assigned, so an own `"__proto__"` member stays a member and never
+ * becomes the object's prototype.
+ */
+function wellFormed(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(LONE_SURROGATE, '\uFFFD');
+  if (Array.isArray(value)) return value.map(wellFormed);
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [name, member] of Object.entries(value)) {
+      Object.defineProperty(out, name.replace(LONE_SURROGATE, '\uFFFD'), {
+        value: wellFormed(member), enumerable: true, writable: true, configurable: true,
+      });
+    }
+    return out;
+  }
+  return value;
+}
+
 export class Webhook {
   private readonly apiSecret: string;
 
@@ -63,6 +88,12 @@ export class Webhook {
    * `MemoryWebhookReplayCache`, or your own Redis-backed one) so a replayed
    * delivery throws `TouchqueWebhookReplayError` instead of re-running your
    * logic; without it, de-duplicate on `payload.jti` yourself.
+   *
+   * The signature is checked over the body exactly as Touchque sent it. In the
+   * payload handed back, each unpaired UTF-16 surrogate (which JSON.stringify
+   * writes as `\ud800`, e.g. in a password a customer typed, forwarded by a
+   * Touchque Login user-store request) is U+FFFD, so every string can be
+   * encoded as UTF-8.
    *
    * @throws {TouchqueWebhookSignatureError}
    *
@@ -147,7 +178,7 @@ export class Webhook {
       if (!options.replayCache.checkAndSet(jti, ttl)) throw new TouchqueWebhookReplayError(jti);
     }
 
-    return payload as WebhookPayload;
+    return wellFormed(payload) as WebhookPayload;
   }
 
   /**

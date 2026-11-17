@@ -187,6 +187,23 @@ describe('HttpClient — error handling', () => {
     expect(err.data).toMatchObject({ reason: 'invalid_code', attemptsLeft: 4 });
   });
 
+  test('keeps a Touchque Login refusal\'s field and count (passkeys_exist); the code stays in data.error', async () => {
+    const body = { error: 'passkeys_exist', field: 'passkeyDomain', count: 3, message: '3 customer passkeys belong to the current setting and would stop working' };
+    const request = vi.fn().mockRejectedValue({ isAxiosError: true, response: { status: 409, data: body, headers: {} } });
+    (axios.create as any) = vi.fn(() => ({ post: vi.fn(), get: vi.fn(), delete: vi.fn(), request }));
+    (axios.isAxiosError as any) = vi.fn(() => true);
+    const client = new HttpClient(VALID_CONFIG);
+    const err: any = await client.put('/identity/tenant', { passkeyDomain: 'acme.com' }).catch((e) => e);
+    expect(err).toBeInstanceOf(TouchqueAPIError);
+    expect(err).toMatchObject({ status: 409, code: undefined, message: body.message });
+    expect(err.data).toMatchObject({ error: 'passkeys_exist', field: 'passkeyDomain', count: 3 });
+
+    // Only a text field and a number count are kept.
+    request.mockRejectedValueOnce({ isAxiosError: true, response: { status: 409, data: { error: 'x', field: 7, count: '3' }, headers: {} } });
+    const odd: any = await client.put('/identity/tenant', {}).catch((e) => e);
+    expect(odd.data).toMatchObject({ field: undefined, count: undefined });
+  });
+
   test('wraps a completely unknown (non-axios) error with a 500 fallback', async () => {
     const post = vi.fn().mockRejectedValue(new Error('socket hang up'));
     (axios.create as any) = vi.fn(() => ({ post, get: vi.fn(), delete: vi.fn() }));

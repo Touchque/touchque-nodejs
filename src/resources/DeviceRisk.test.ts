@@ -99,7 +99,7 @@ describe('DeviceRisk resource', () => {
   });
 
   test('the address, the visitor\'s counts and one answer to "a bot?" come through', () => {
-    const network = { countryCode: 'TR', city: 'İzmir', asn: 34984, asnOrg: 'Superonline', type: 'isp', tor: false, hosting: false, timezoneMismatch: false };
+    const network = { countryCode: 'CH', city: 'Zürich', asn: 3303, asnOrg: 'Swisscom', type: 'isp', tor: false, hosting: false, timezoneMismatch: false };
     const r = parseDeviceRiskCheck({ report: 'ok', network, velocity: { accounts24h: 1, identifications1h: 2 }, bot: { result: 'suspected', reasons: ['pointer_synthetic'] } });
     expect(r.network).toEqual(network);
     expect(r.velocity).toMatchObject({ identifications1h: 2 });

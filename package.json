@@ -1,6 +1,6 @@
 {
   "name": "@touchque/node",
-  "version": "5.4.0",
+  "version": "5.5.0",
   "description": "Official Node.js SDK for Touchque Authenticator (2FA/MFA, passkeys, adaptive auth)",
   "repository": {
     "type": "git",

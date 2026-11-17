@@ -148,6 +148,35 @@ describe('Webhook.verify — matches the backend signing scheme', () => {
     expect(() => webhook.verify({ rawBody: injected })).toThrow(TouchqueWebhookSignatureError);
   });
 
+  // JSON.stringify writes an unpaired surrogate as an escape (\ud800): the signature is checked over the body as
+  // sent, and the payload handed back has U+FFFD in its place, so every string can be encoded as UTF-8.
+  test('hands back each unpaired surrogate as U+FFFD: in nested strings, arrays and member names too', () => {
+    const webhook = new Webhook(SECRET);
+    const { rawBody, signature } = serverWebhook(freshPayload({
+      note: 'a\ud800b',
+      context: { list: ['\udc00x', 'ok 😀', 7, null], 'k\udbff': true, deep: { text: 'z\udfff', pair: '\ud83d\ude00' } },
+    }));
+    expect(rawBody).toContain('"a\\ud800b"');
+    const result = webhook.verify({ rawBody, signature });
+    expect(result.note).toBe('a\uFFFDb');
+    expect(result.context).toEqual({ list: ['\uFFFDx', 'ok 😀', 7, null], 'k\uFFFD': true, deep: { text: 'z\uFFFD', pair: '\u{1F600}' } });
+    expect(result).toMatchObject({ requestId: 'req_1', riskFactors: [], deviceId: null, riskScore: 0 });
+    // Tampered after signing: still refused.
+    expect(() => webhook.verify({ rawBody: rawBody.replace('a\\ud800b', 'a\\ud801b'), signature })).toThrow(TouchqueWebhookSignatureError);
+  });
+
+  test('a nested "__proto__" member stays a member of the payload handed back, never its prototype', () => {
+    const webhook = new Webhook(SECRET);
+    const context = JSON.parse('{"__proto__":{"isAdmin":true},"name":"\\ud800"}');
+    const result = webhook.verify(serverWebhook(freshPayload({ context })));
+    const handedBack = result.context as Record<string, unknown>;
+    expect(Object.getPrototypeOf(handedBack)).toBe(Object.prototype);
+    expect(handedBack.isAdmin).toBeUndefined();
+    expect(Object.keys(handedBack)).toEqual(['__proto__', 'name']);
+    expect(Object.getOwnPropertyDescriptor(handedBack, '__proto__')?.value).toEqual({ isAdmin: true });
+    expect(handedBack.name).toBe('\uFFFD');
+  });
+
   test('a login result types its status as SUCCESS or REJECTED', () => {
     const result = new Webhook(SECRET).verify(serverWebhook(freshPayload()));
     // A compile error (TS2367) while status was typed PENDING | CONFIRMED | REJECTED | EXPIRED.

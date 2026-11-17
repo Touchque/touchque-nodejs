@@ -935,6 +935,105 @@ expires (with `offline_access`) and sends a signed-out browser to `/login?return
 appUrl })` gives the route handlers and `getSession()`, and `touchqueMiddleware` from
 `@touchque/node/next/middleware` protects pages on the Edge.
 
+### Custom domains
+
+Sign-in on your own domain (`login.acme.com`): add it with `customDomains.create({ domain })`, put the `records` from
+the answer in its DNS (a CNAME, and a TXT record unless the domain is on one your organization verified under
+**Organization → Domains**), then verify it. Touchque also checks a new domain by itself for 72 hours
+(`autoCheckUntil`).
+
+```typescript
+await tq.identity.customDomains.verify(id);  // the TXT record and the domain's DNS, now; answers the domain
+await tq.identity.customDomains.get(id);     // found in the list; none: 404 with err.data.error 'not_found'
+const { domains, verifiedDomains, slugPasskeys } = await tq.identity.customDomains.overview();
+```
+
+`overview()` is the API's answer whole: `domains` (each with `dns`, what its DNS said at the last check, and
+`autoCheckUntil`), `verifiedDomains` (your organization's, null when they could not be read) and `slugPasskeys`
+(customer passkeys made on `<slug>.login.touchque.com`, which do not work on a custom domain). `list()` is an alias of
+it: the same answer, as the array of domains, which also carries `verifiedDomains` and `slugPasskeys`. A verified
+domain becomes your issuer with `customDomains.update(id, { primary: true })`.
+
+### Passkey domain
+
+The passkey domain is the relying party ID your customers' passkeys are made for: a passkey works on it and on every
+host under it. With none (the default) a passkey belongs to the host it was made on, so moving sign-in to another host
+leaves it behind. Only a domain you proved: one of your verified custom domains, or a domain above one that your
+organization verified under **Organization → Domains** (`acme.com` for `login.acme.com`; a TXT record on
+`login.acme.com` proves nothing about `acme.com`).
+
+```typescript
+await tq.identity.setPasskeyDomain('acme.com'); // answers the tenant, with passkeyDomain
+await tq.identity.setPasskeyDomain(null);       // none
+```
+
+Set it before customers make passkeys: a passkey belongs to its domain for good, so a change that would leave customer
+passkeys behind is refused. Refusals are a `TouchqueAPIError` with the code in `err.data.error` and the field in
+`err.data.field`:
+
+- 400 `invalid_request`, field `passkeyDomain`: not a domain;
+- 409 `not_your_domain`: neither a verified custom domain nor a domain above one that your organization verified;
+- 409 `organization_unavailable`: your organization's verified domains could not be read (try again);
+- 409 `passkeys_exist`: the change would leave customer passkeys behind (how many in `err.data.count`);
+- before Touchque Login is set up for the workspace: 400 `invalid_request` with field `slug` (set it up first with
+  `updateTenant({ slug, displayName })`).
+
+`customDomains.overview()` also carries `verifiedDomains` (your organization's) and `slugPasskeys`: passkeys made on
+`<slug>.login.touchque.com`, which stay there. The 2FA API's passkey domain is another setting (dashboard → Developers
+→ App user policy).
+
+### Moving customers in from your user database
+
+Your customers keep their passwords, with no bulk import and no reset: Touchque asks your user database about an
+address that has no account in Touchque Login yet, and moves it in.
+
+```typescript
+await tq.identity.setUserStore({ url: 'https://api.acme.com/touchque/user-store' }); // on from now
+await tq.identity.testUserStore();      // one signed user_store.ping: { ok, error, ms }
+await tq.identity.getUserStore();       // { url, enabled, active, movedIn, lastCall, paused, updatedAt, signing }
+await tq.identity.setUserStore({ enabled: false }); // a field left out keeps its value
+await tq.identity.removeUserStore();    // idempotent; accounts already moved in stay
+```
+
+`testUserStore(url)` pings another address instead (left out, null or `''`: the endpoint set).
+
+Touchque POSTs JSON to `url`, signed like its webhooks: `user_store.verify_password` { email, password } at a password
+sign-in, `user_store.get_user` { email } at a password reset, an email code or a sign-up, `user_store.ping` from
+`testUserStore`. `tq.webhook.verify` checks each one over its body exactly as Touchque signed it, whatever the customer
+typed (quotes, backslashes, control characters, U+2028, emoji, unpaired UTF-16 surrogates); in the payload it hands
+back each unpaired surrogate is U+FFFD, so `password` can be encoded as UTF-8 for your password check. Answer 200
+within 5 seconds, no redirect: `{ user: { id, email } }`, where `id` is yours (kept as the account's `externalId`) and
+`email` the address asked about, optionally with `emailVerified`, `name`, `givenName`, `familyName`, `nickname`,
+`picture` (https), `locale`, `phone`, `userMetadata` and `appMetadata`; or `{ user: null }` (404 counts as null), the
+same for an unknown address and a wrong password.
+
+```typescript
+import { MemoryWebhookReplayCache, type WebhookPayload } from '@touchque/node';
+const replayCache = new MemoryWebhookReplayCache();
+
+app.post('/touchque/user-store', express.raw({ type: 'application/json' }), async (req, res) => {
+  let ask: WebhookPayload;
+  try {
+    ask = tq.webhook.verify({ rawBody: req.body.toString('utf8'), signature: req.get('x-signature'), replayCache });
+  } catch {
+    res.sendStatus(403); // not from Touchque
+    return;
+  }
+  const found = ask.event === 'user_store.ping' ? null : await db.findUserByEmail(String(ask.email));
+  const known = found && (ask.event !== 'user_store.verify_password' || await checkPassword(found, String(ask.password)));
+  res.json({ user: found && known ? { id: found.id, email: found.email, emailVerified: found.emailVerified, name: found.name } : null });
+});
+```
+
+A password you confirmed is kept by Touchque (Argon2id) and that customer is not asked about again; users carry
+`fromUserStore` and `externalId`, and `movedIn` counts them. An account made by a lookup has no password yet: the reset
+or the email code proves the inbox, and its old password is checked with you once more at its next password sign-in.
+Any other answer, or none in 5 seconds, is "try again" for the customer, never a wrong password, and 5 in a row pause
+the asking for a minute (`paused`; `lastCall` shows the latest). It is asked only while passwords are on (`active`):
+`setUserStore` refuses 409 `passwords_off` while `signInMethods.password` is false, and turning passwords off is
+refused 409 `user_store_on` while it is on. `removeUserStore()` answers 204 also when none is set; a 404
+(`not_enabled`) means Touchque Login is not set up for this workspace.
+
 ## Testing your routes
 
 `@touchque/node/testing` has `FakeTouchque`: a `Touchque` client that answers in memory, with no network, no

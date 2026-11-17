@@ -3,6 +3,28 @@
 All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [5.5.0] — 2026-11-17
+
+### Added
+- Touchque Login, moving your customers in from your own user database (`/identity/user-store`):
+  - `identity.getUserStore()` (GET) and `identity.setUserStore({ url?, enabled? })` (PUT) answer an `IdentityUserStore`: `url`, `enabled`, `active` (asked now: enabled and passwords on), `movedIn`, `lastCall` (`at`, `event`, `ok`, `status`, `ms`, `error`, or null), `paused`, `updatedAt`, `signing`. `url` (https, a public address) is needed the first time, when `enabled` defaults to true; later a field left out keeps its value. Refused 409 `passwords_off` while `signInMethods.password` is false.
+  - `identity.testUserStore(url?)` (POST `/test`; `{}` when `url` is left out, null or empty, else `{ url }`) sends one signed `user_store.ping` to `url` or to the endpoint set and answers `{ ok, error, ms }`: an endpoint that fails is `ok: false`, not an exception.
+  - `identity.removeUserStore()` (DELETE) resolves with nothing: 204, also when none is set. Accounts already moved in stay.
+  - For an address with no account in Touchque Login yet, Touchque POSTs `user_store.verify_password` { email, password } at a password sign-in and `user_store.get_user` { email } at a password reset, an email code or a sign-up, signed like its webhooks: `tq.webhook.verify({ rawBody, signature })` checks them, whatever the customer typed (tested against the shared vectors, `fixtures/user-store-vectors.json`). Answer 200 within 5 seconds with `{ user: { id, email } }` (`email` the address asked about; optionally `emailVerified`, `name`, `givenName`, `familyName`, `nickname`, `picture`, `locale`, `phone`, `userMetadata`, `appMetadata`) or `{ user: null }` (404 counts as null), the same for an unknown address and a wrong password. A confirmed password is kept by Touchque and that customer is not asked about again; any other answer is "try again" for the customer, and 5 in a row pause the asking for a minute.
+  - `IdentityUser` has `externalId` (your id from the user store) and `fromUserStore`.
+  - Tenants with no passwords at all: `identity.updateTenant({ signInMethods: { password: false, emailCode: true } })` (a passkey or an email code; 400 without the email code, 409 `user_store_on` while the user store is on). `signInMethods` sent without `password` keeps it as it is.
+- Touchque Login: `identity.setPasskeyDomain(domain | null)` (PUT `/identity/tenant` { passkeyDomain }) sets the relying party ID customer passkeys are made for, answering the tenant with `passkeyDomain`: null or `''` for none (a passkey belongs to the host it was made on), one of your verified custom domains, or a domain above one that your organization verified under Organization → Domains (`acme.com` for `login.acme.com`), so passkeys keep working on every host under it. Refused (the code in `err.data.error`, the field in `err.data.field`): 400 `invalid_request` with field `passkeyDomain` (not a domain); 409 `not_your_domain`; 409 `organization_unavailable` (try again); 409 `passkeys_exist` with `count`, when the change would leave customer passkeys behind; before Touchque Login is set up for the workspace, 400 `invalid_request` with field `slug`. Custom-domain answers carry `dns` (what the domain's DNS said: `points`, `cloudflareProxy`, `caaBlocks`, `problems`) and `autoCheckUntil`.
+- Touchque Login: `identity.customDomains.overview()` answers GET `/identity/custom-domains` whole, typed `IdentityCustomDomainsOverview`: `domains`, `verifiedDomains` (your organization's verified domains, null when they could not be read) and `slugPasskeys` (customer passkeys made on `<slug>.login.touchque.com`). `customDomains.list()` stays, an alias of it: the same answer as the array of domains, which also carries `verifiedDomains` and `slugPasskeys`.
+- README, Touchque Login: "Custom domains", "Passkey domain" and "Moving customers in from your user database" (with an Express endpoint).
+
+### Changed
+- `webhook.verify()` hands back the payload with each unpaired UTF-16 surrogate in its strings and member names replaced by U+FFFD; the signature is still checked over the body exactly as sent. JSON.stringify writes such a surrogate as an escape (`\ud800`), and a Touchque Login user-store request forwards whatever the customer typed, so a `password` could come back as a string that cannot be encoded as UTF-8.
+- `identity.customDomains.get(id)` with no such domain throws the API's own 404 shape: `err.data.error` is `not_found` and `err.data.message` a sentence, with `err.code` undefined, as for every Touchque Login refusal. It had `err.code` `not_found` and the sentence in `err.data.error`.
+
+### Fixed
+- `TouchqueAPIError.data` keeps a refusal's `field` (the request field a Touchque Login Management API refusal is about: `passkeyDomain`, `url`, `enabled`…) and `count` (`passkeys_exist`): `TouchqueErrorData.field` and `.count`. Both were dropped.
+- `identity.customDomains.list()` dropped the answer's `verifiedDomains` (your organization's verified domains, null when they could not be read) and `slugPasskeys` (customer passkeys made on `<slug>.login.touchque.com`): the array it returns now carries both (`IdentityCustomDomainList`, still an array, an alias of `overview()`).
+
 ## [5.4.0] — 2026-11-16
 
 ### Added

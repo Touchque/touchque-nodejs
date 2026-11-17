@@ -8,7 +8,7 @@
 //   const job = await tq.identity.imports.start({ users: [{ email, passwordHash: '$2b$10$…' }] });
 
 import { HttpClient } from '../core/HttpClient';
-import { TouchqueAPIError } from '../errors';
+import { apiError } from '../errors';
 
 const seg = (v: string) => encodeURIComponent(v);
 
@@ -20,6 +20,10 @@ export interface IdentityUser {
   picture: string | null;
   blocked: boolean;
   hasPassword: boolean;
+  /** Your own id for the customer, from your user store (`user.id` in its answer); null for others. */
+  externalId?: string | null;
+  /** Moved in from your user store at a first sign-in, reset, email code or sign-up. */
+  fromUserStore?: boolean;
   connections: string[];
   createdAt: string;
   lastLoginAt: string | null;
@@ -91,6 +95,52 @@ export interface DeliveryProvider {
   accountSid?: string; authToken?: string; messagingServiceSid?: string;
   usercode?: string;
 }
+
+/**
+ * GET and PUT /identity/user-store: moving your customers in from your own user database. `lastCall` and `paused`
+ * are what the Touchque server that answered has seen.
+ */
+export interface IdentityUserStore {
+  /** Your endpoint; null until one is set. */
+  url: string | null;
+  /** Whether it is to be asked. */
+  enabled: boolean;
+  /** Asked now: enabled, and passwords on (`signInMethods.password`). */
+  active: boolean;
+  /** Accounts made from it so far. */
+  movedIn: number;
+  /** The latest call: `status` is your endpoint's HTTP status, `error` why it counted as unavailable. */
+  lastCall: { at: string; event: string; ok: boolean; status: number | null; ms: number | null; error: string | null } | null;
+  /** 5 unavailable answers in a row stop the asking for a minute. */
+  paused: boolean;
+  updatedAt: string | null;
+  /** How the requests are signed. */
+  signing: string;
+}
+
+/** `customDomains.overview()`: GET /identity/custom-domains as the API answers it. */
+export interface IdentityCustomDomainsOverview {
+  /**
+   * Your custom domains, oldest first: each with `records` (what to put in its DNS), `dns` (what its DNS said at the
+   * last check) and `autoCheckUntil`.
+   */
+  domains: Array<Record<string, unknown>>;
+  /** Your organization's verified domains (Organization → Domains); null when they could not be read. */
+  verifiedDomains: string[] | null;
+  /** Customer passkeys made on `<slug>.login.touchque.com`: they belong to that name and do not work on a custom domain. */
+  slugPasskeys: number;
+}
+
+/**
+ * `customDomains.list()`, an alias of `customDomains.overview()`: the same answer, as the array of domains carrying
+ * `verifiedDomains` and `slugPasskeys`.
+ */
+export type IdentityCustomDomainList = Array<Record<string, unknown>> & {
+  /** Your organization's verified domains (Organization → Domains); null when they could not be read. */
+  verifiedDomains: string[] | null;
+  /** Customer passkeys made on `<slug>.login.touchque.com`: they belong to that name and do not work on a custom domain. */
+  slugPasskeys: number;
+};
 
 type Q = Record<string, string | number | boolean>;
 type Body = Record<string, unknown>;
@@ -181,14 +231,39 @@ class Organizations extends Crud {
 /** Custom domains have no read by id: `get` finds the domain in the list. */
 class CustomDomains extends Crud {
   constructor(http: HttpClient) { super(http, '/identity/custom-domains', 'domains'); }
-  /** The domain with this id (404 `not_found` when the workspace has none). */
-  async get(id: string) {
+  /** GET /identity/custom-domains as the API answers it: `{ domains, verifiedDomains, slugPasskeys }`. */
+  overview(): Promise<IdentityCustomDomainsOverview> { return this.read(); }
+  /**
+   * An alias of `overview()`: the same answer, as the array of domains, which also carries `verifiedDomains` and
+   * `slugPasskeys`.
+   */
+  async list(params?: Q): Promise<IdentityCustomDomainList> {
+    const { domains, verifiedDomains, slugPasskeys } = await this.read(params);
+    return Object.assign(domains, { verifiedDomains, slugPasskeys });
+  }
+  /**
+   * The domain with this id, found in `list()` (the API has no read by id). With none, a `TouchqueAPIError` shaped
+   * like the API's own 404: `status` 404, `err.data.error` `not_found`, `err.data.message` a sentence.
+   */
+  async get(id: string): Promise<Record<string, unknown>> {
     const domain = (await this.list()).find((d) => d.id === id);
-    if (!domain) throw new TouchqueAPIError(404, { code: 'not_found', error: 'No custom domain with this id' });
+    if (!domain) throw apiError(404, { error: 'not_found', message: 'No custom domain with this id' });
     return domain;
   }
-  /** Checks the DNS TXT record (a domain your organization verified needs none). */
-  verify(id: string) { return this.http.post<Record<string, unknown>>(`${this.base}/${seg(id)}/verify`); }
+  /**
+   * POST /identity/custom-domains/{id}/verify: checks the DNS TXT record now (a domain on one your organization
+   * verified needs none) and looks at the domain's DNS (`dns`). Answers the domain.
+   */
+  verify(id: string) { return this.http.post<Record<string, unknown>>(`${this.base}/${seg(id)}/verify`, {}); }
+
+  private async read(params?: Q): Promise<IdentityCustomDomainsOverview> {
+    const body = await this.http.get<Partial<IdentityCustomDomainsOverview> | null>(this.base, params);
+    return {
+      domains: Array.isArray(body?.domains) ? body.domains : [],
+      verifiedDomains: Array.isArray(body?.verifiedDomains) ? body.verifiedDomains : null,
+      slugPasskeys: typeof body?.slugPasskeys === 'number' ? body.slugPasskeys : 0,
+    };
+  }
 }
 
 class Clients extends Crud {
@@ -235,6 +310,22 @@ export class Identity {
    * refuses other calls. Turning it on needs a verified primary domain with a working certificate.
    */
   setCustomDomainOnly(on: boolean) { return this.http.put<Record<string, unknown>>('/identity/tenant', { customDomainOnly: on }); }
+  /**
+   * The passkey domain: the relying party ID customer passkeys are made for, so they work on it and on every host
+   * under it. null (or '') for none: a passkey belongs to the host it was made on. Otherwise one of your verified
+   * custom domains, or a domain above one that your organization verified under Organization → Domains (`acme.com`
+   * for `login.acme.com`). Answers the tenant (`passkeyDomain`). A passkey belongs to its domain for good, so set it
+   * before customers make passkeys.
+   *
+   * Refused with a `TouchqueAPIError`, the code in `err.data.error` and the field in `err.data.field`:
+   * - 400 `invalid_request`, field `passkeyDomain`: not a domain;
+   * - 409 `not_your_domain`: neither a verified custom domain nor a domain above one that your organization verified;
+   * - 409 `organization_unavailable`: your organization's verified domains could not be read (try again);
+   * - 409 `passkeys_exist`: the change would leave customer passkeys behind (how many in `err.data.count`);
+   * - before Touchque Login is set up for the workspace: 400 `invalid_request` with field `slug` (set it up first
+   *   with `updateTenant({ slug, displayName })`).
+   */
+  setPasskeyDomain(domain: string | null) { return this.http.put<Record<string, unknown>>('/identity/tenant', { passkeyDomain: domain }); }
   /** Checks a verified custom domain's certificate at the sign-in edge now (`certificate`: pending | active | error). */
   checkDomainCertificate(domainId: string) { return this.http.post<Record<string, unknown>>(`/identity/custom-domains/${seg(domainId)}/check-certificate`); }
   /** The delivery log. Message text only in the local dev inbox: real providers' codes and links are not kept. */
@@ -253,4 +344,30 @@ export class Identity {
   removeDelivery(channel: 'email' | 'sms') { return this.http.delete<Record<string, unknown>>(`/identity/delivery/${channel}`); }
   /** One test message through the provider in use. */
   testDelivery(channel: 'email' | 'sms', to: string) { return this.http.post<{ ok: boolean; queued: boolean; status: string | null; provider: string | null; error: string | null }>(`/identity/delivery/${channel}/test`, { to }); }
+  /**
+   * Moving your customers in from your own user database. For an address with no account here yet, Touchque POSTs
+   * to your endpoint `user_store.verify_password` { email, password } at a password sign-in and
+   * `user_store.get_user` { email } at a password reset, an email code or a sign-up, signed like its webhooks: check
+   * each request with `tq.webhook.verify({ rawBody, signature })`. Answer 200 `{ user: { id, email, ... } }` (`email`
+   * the address asked about) or `{ user: null }` (404 counts as null; the same for an unknown address and a wrong
+   * password) within 5 seconds. A checked password is kept here and that customer is not asked about again.
+   */
+  getUserStore() { return this.http.get<IdentityUserStore>('/identity/user-store'); }
+  /**
+   * Sets the endpoint (`url`: https, needed the first time) and whether it is asked (`enabled`, true the first time).
+   * A field left out keeps its value. Refused: 400 `invalid_request` (`field` url or enabled), 409 `passwords_off`
+   * (enabled while passwords are off).
+   */
+  setUserStore(store: { url?: string; enabled?: boolean }) { return this.http.put<IdentityUserStore>('/identity/user-store', store as unknown as Body); }
+  /**
+   * One signed `user_store.ping`: to `url`, or to the endpoint set when `url` is left out, null or '' (the body is
+   * then `{}`). Answers `{ ok, error, ms }`: an endpoint that fails is `ok: false` with the reason, not an exception.
+   * It shows in `lastCall` and neither waits for nor counts towards the pause.
+   */
+  testUserStore(url?: string | null) { return this.http.post<{ ok: boolean; error: string | null; ms: number }>('/identity/user-store/test', url ? { url } : {}); }
+  /**
+   * Stops asking your user database; accounts already moved in stay. Idempotent: 204 also when none is set. A 404 is
+   * not "already removed": `not_enabled` means Touchque Login is not set up for this workspace.
+   */
+  removeUserStore() { return this.http.delete<void>('/identity/user-store'); }
 }
