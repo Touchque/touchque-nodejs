@@ -24,7 +24,6 @@ import { Agents } from './resources/Agents';
 import { Identity } from './resources/Identity';
 import { Mobile } from './resources/Mobile';
 import { QrPairings } from './resources/QrPairings';
-import { DeviceRisk } from './resources/DeviceRisk';
 import { SafeGuard } from './resources/SafeGuard';
 import { TouchqueConfig } from './types';
 import { TouchqueConfigError } from './errors';
@@ -48,7 +47,6 @@ export * from './resources/Agents';
 export * from './resources/Identity';
 export * from './resources/Mobile';
 export * from './resources/QrPairings';
-export * from './resources/DeviceRisk';
 export * from './resources/SafeGuard';
 export * from './safeGuard';
 export * from './agent';
@@ -91,8 +89,6 @@ export class Touchque {
   public readonly mobile: Mobile;
   /** Pairing a browser by QR code: the phone that scans it is the one asked to approve. */
   public readonly qrPairings: QrPairings;
-  /** Device risk: the device on your sign-up, reset, sign-in or approval page (a paid add-on). */
-  public readonly deviceRisk: DeviceRisk;
   /** Safe Guard: Safe transactions approved on the approver's phone, for TouchqueSafeGuard. */
   public readonly safeGuard: SafeGuard;
 
@@ -133,7 +129,6 @@ export class Touchque {
     this.identity = new Identity(http);
     this.mobile = new Mobile(http);
     this.qrPairings = new QrPairings(http);
-    this.deviceRisk = new DeviceRisk(http);
     this.safeGuard = new SafeGuard(http);
     registerInternals(this, { apiSecret: resolved.apiSecret, resources: { http, auth: this.auth, login: this.login, offline: this.offline, risk: this.risk } });
   }

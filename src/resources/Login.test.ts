@@ -203,3 +203,16 @@ describe('Login — phishing-resistant policy', () => {
     expect(res).toMatchObject({ consumed: true, externalUsername: 'a@b.com' });
   });
 });
+
+describe('Touchque Device Risk pass-through', () => {
+  test('login.request and risk.check pass deviceRiskRequestId (and deviceRisk) through untouched', async () => {
+    const { Risk } = await import('./Risk');
+    const RID = `dre_${'a'.repeat(22)}`;
+    const http = fakeHttp();
+    (http.post as any).mockResolvedValue({ prompt: true, reasons: [], requestId: 'r1', status: 'PENDING' });
+    await new Risk(http).check({ externalUsername: 'a@b.com', deviceRiskRequestId: RID });
+    expect(http.post).toHaveBeenLastCalledWith('/risk/check', { externalUsername: 'a@b.com', deviceRiskRequestId: RID });
+    await new Login(http).request({ externalUsername: 'a@b.com', type: 'LOGIN', deviceRiskRequestId: RID, deviceRisk: 'REPORT' } as never).catch(() => null);
+    expect((http.post as any).mock.calls.at(-1)[1]).toMatchObject({ deviceRiskRequestId: RID, deviceRisk: 'REPORT' });
+  });
+});

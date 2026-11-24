@@ -395,6 +395,64 @@ const ch = await tq.offline.challenge({ externalUsername, type: 'LOGIN', request
   after scanning and the user taps the one that matches. The phone is never told which is right — a wrong tap
   produces a code that fails verification.
 
+**A QR for a terminal or a small screen.** `qrFormat: 'compact'` returns a smaller QR (`qr` starts with `TQ3:`)
+for the same challenge and the same 7-character code, and `includeQrTerminal: true` adds `qrTerminal`: the QR
+drawn with Unicode half blocks, ready to print. The answer's `qrFormat` says which format `qr` is. The compact
+QR carries no location block, so put what the phone should show in `details`:
+
+```typescript
+const ch = await tq.offline.challenge({
+  externalUsername: 'jane@acme.com',
+  type: 'LOGIN',
+  details: { Server: 'db-1.acme.internal', Account: 'deploy' },
+  qrFormat: 'compact',
+  includeQrTerminal: true,
+  includeQrImage: false,
+});
+console.log(ch.qrTerminal); // then verify() the code the user types, as above
+```
+
+## Offline sign-in packs (a device with no network)
+
+For your own device that must sign a person in for days without reaching Touchque (a laptop, a kiosk, a
+field tablet): your server asks for "the next N offline sign-ins" of that person on that device, and the
+device keeps them. Per slot it gets only a salt, a slow digest (PBKDF2-SHA256) and a QR sealed for the
+person's phone: nothing on the device can produce a code. Requires the workspace policies
+`offlineSignEnabled` and `offlineDevicePacksEnabled`.
+
+```typescript
+import { verifyDeviceCode } from '@touchque/node';
+
+// Your server, right after a sign-in the person approved on the phone at that device itself:
+const pack = await tq.offline.issueDevicePack({
+  externalUsername: 'jane@acme.com',
+  scope: { id: 'pc-0f1e2d3c4b5a6978', name: 'LAPTOP-JANE' }, // one id per device install
+  account: 'ACME\\jane',                                      // shown on the phone
+  count: 10, validDays: 14,                                   // the defaults
+});
+// Send the pack to the device. Offline, it shows the lowest unused slot's QR (slot.qr, or
+// slot.qrTerminal in a terminal); the person scans it with the Touchque app, approves and types
+// the 10-character code (XXXXX-XXXXX):
+if (await verifyDeviceCode(pack.kdf, slot, typed)) {
+  // signed in: drop this slot and every lower one, keep { index, at } to report
+}
+
+// Back online:
+await tq.offline.reportDevicePackUse({ scopeId: pack.scope.id, externalUsername: 'jane@acme.com', used });
+// A lost, stolen or reinstalled device:
+await tq.offline.revokeDeviceScope({ scopeId: pack.scope.id, reason: 'lost' });
+```
+
+- Issue a pack only after a sign-in the person approved on the phone **at that device itself**, never for a
+  remote session.
+- Show the QR of the **lowest unused slot** and accept a code only for that slot; then drop it and every
+  lower one.
+- Lock after **5 wrong codes in 15 minutes**, refuse when the device's **clock went back** (keep the latest
+  time you have seen), and drop a pack's slots at its own `validUntil` (their QRs carry it: a newer pack does not
+  extend older slots).
+- Report the slots used when the device is back online, and **revoke a lost device**; a reinstalled device
+  gets a new scope id. `normalizeDeviceCode()` and `formatDeviceCode()` ignore case, spaces and dashes.
+
 ## Webhooks
 
 ```typescript

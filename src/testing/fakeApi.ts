@@ -9,6 +9,13 @@ import type { Server } from 'http';
 import { Touchque } from '../index';
 import type { DevicePosture } from '../types';
 
+// The API's checks (controllers/offlineDevice.controller.js): a scope id is 1-64 characters of
+// a-z, 0-9, ".", "_", "-" (lower-cased); user names match exactly; ranges as the API.
+const DEVICE_SCOPE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const deviceScopeOf = (raw: unknown): string | null => { const id = typeof raw === 'string' ? raw.trim().toLowerCase() : ''; return DEVICE_SCOPE_ID.test(id) ? id : null; };
+const deviceUserOf = (raw: unknown): string | null => (typeof raw === 'string' && raw && raw.length <= 255 ? raw : null);
+const deviceText = (raw: unknown, max: number): string | null => { const t = typeof raw === 'string' ? raw.trim() : ''; return t && t.length <= max ? t : null; };
+
 /** A healthy phone posture, like the real API's `device` on a user with a linked phone. */
 const DEVICE_POSTURE: DevicePosture = {
   platform: 'ios', model: 'iPhone15,3', osVersion: '18.1', securityPatch: null, appVersion: '1.0.0', screenLock: true,
@@ -52,7 +59,9 @@ export interface FakeApi {
    * everyday action (a critical one still asks, as does an unlinked user).
    * `secretTtlMs`: how long a first-time linking QR lives (default 5 minutes, like the API).
    */
-  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; silent?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string; secretTtlMs?: number };
+  opts: { numberMatch?: boolean; passkeyOnly?: boolean; telemetry?: boolean; canary?: boolean; silent?: boolean; frozen?: boolean; rateLimited?: boolean; blocked?: string; offlineCode?: string; totpCode?: string; secretTtlMs?: number; devicePacksDisabled?: boolean };
+  /** Offline sign-in packs per "<lower-case user>\n<scope id>": the next index, revoked, the uses reported. */
+  devicePacks: Map<string, FakeDevicePack>;
   approve(id?: string, via?: string, extra?: { provisional?: boolean }): void;
   reject(id?: string): void;
   /** Vishing Shield: the phone tap moved the request to a passkey (still PENDING), open 180 s more for the ceremony. */
@@ -60,6 +69,17 @@ export interface FakeApi {
   revoke(id?: string, reason?: 'UNDO' | 'COACHED'): void;
   reconfirm(id?: string): void;
   close(): Promise<void>;
+}
+
+/** One person's offline sign-in packs on one device, like the API's offline_device_scopes row. */
+export interface FakeDevicePack {
+  nextIndex: number; epoch: string; revoked: boolean; used: Array<{ index: number; at: string }>;
+}
+
+const DEVICE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+/** The fake's code of offline sign-in slot `index`, the same as the shared fake's devicePackCode(). */
+export function devicePackCode(index: number): string {
+  return `ABCDEFGH${DEVICE_ALPHABET[index % 32]}${DEVICE_ALPHABET[Math.floor(index / 32) % 32]}`;
 }
 
 const toPairs = (d: any) => (!d ? null : Array.isArray(d) ? d : Object.entries(d).map(([label, value]) => ({ label, value: String(value) })));
@@ -105,6 +125,7 @@ export async function startFakeApi(): Promise<FakeApi> {
     calls: [] as Array<{ method: string; path: string; body: any }>,
     opts: {} as FakeApi['opts'],
     challenges: new Map<string, { user: string; type: string; used: boolean; requestId?: string }>(),
+    devicePacks: new Map<string, FakeDevicePack>(),
     browsers: [] as FakeBrowser[],
     lastCheck: null as any,
   };
@@ -257,7 +278,11 @@ export async function startFakeApi(): Promise<FakeApi> {
 
   // Like the real API: a QR that follows a push is tied to it. A request the phone REJECTED kills the QR
   // (none is issued, a code is refused), and a push with number matching makes the QR show the same number.
+  // qrFormat 'compact' answers a compact QR ('TQ3:...'), the default 'standard' a 'TQ2.' one, and the
+  // answer says which; includeQrTerminal: true adds qrTerminal (a small Unicode half-block drawing).
   app.post('/offline/challenge', (req, res) => {
+    const { qrFormat = 'standard', includeQrTerminal } = req.body;
+    if (qrFormat !== 'standard' && qrFormat !== 'compact') return res.status(400).json({ error: 'qrFormat must be "standard" or "compact"' });
     const linked = req.body.requestId ? api.requests.find((x) => x.id === req.body.requestId) : undefined;
     if (req.body.requestId && !linked) return res.status(404).json({ error: 'request_not_found' });
     if (linked?.status === 'REJECTED') return res.status(409).json({ error: 'request_rejected' });
@@ -265,7 +290,11 @@ export async function startFakeApi(): Promise<FakeApi> {
     const id = `ch-${++seq}`;
     api.challenges.set(id, { user: req.body.externalUsername, type: req.body.type, used: false, requestId: linked?.id });
     const challengeCode = linked?.challengeCode || (req.body.requireNumberMatch === true ? '47' : undefined);
-    res.json({ challengeId: id, qr: 'TQ2.x', qrDataUrl: 'data:image/png;base64,OFFLINE', expiresAt: 'soon', expiresInSeconds: 120, totpAvailable: true, ...(challengeCode && { challengeCode }) });
+    res.json({
+      challengeId: id, qr: qrFormat === 'compact' ? 'TQ3:X' : 'TQ2.x', qrFormat, qrDataUrl: 'data:image/png;base64,OFFLINE',
+      ...(includeQrTerminal === true && { qrTerminal: '█▀▀▀█\n█ ▄ █\n▀▀▀▀▀' }),
+      expiresAt: 'soon', expiresInSeconds: 120, totpAvailable: true, ...(challengeCode && { challengeCode }),
+    });
   });
   app.post('/offline/verify', (req, res) => {
     const ch = api.challenges.get(req.body.challengeId);
@@ -276,6 +305,75 @@ export async function startFakeApi(): Promise<FakeApi> {
     if (req.body.code !== (api.opts.offlineCode || 'ABCD123')) return res.status(401).json({ approved: false, reason: 'invalid_code', attemptsLeft: 4 });
     ch.used = true;
     res.json({ approved: true, challengeId: req.body.challengeId, externalUsername: ch.user, type: ch.type });
+  });
+  // Offline sign-in packs, like the shared fake (testing/fake-touchque-api.mjs) and the API but with a
+  // cheap KDF (the answer's kdf says 1,000 iterations): the code of slot i is devicePackCode(i).
+  // opts.devicePacksDisabled refuses with 403; a revoked device answers 409 scope_revoked.
+  app.post('/offline/device-packs', (req, res) => {
+    const b = req.body || {};
+    if (api.opts.devicePacksDisabled) return res.status(403).json({ error: 'offline_device_packs_disabled' });
+    const user = deviceUserOf(b.externalUsername);
+    const scopeId = deviceScopeOf(b.scope && b.scope.id);
+    const name = deviceText(b.scope && b.scope.name, 80);
+    const account = deviceText(b.account, 255);
+    const count = b.count === undefined ? 10 : b.count;
+    const days = b.validDays === undefined ? 14 : b.validDays;
+    if (!user) return res.status(400).json({ error: 'externalUsername is required' });
+    if (!scopeId || !name) return res.status(400).json({ error: 'scope: { id, name } is required' });
+    if (!account) return res.status(400).json({ error: 'account is required' });
+    if (!Number.isInteger(count) || count < 1 || count > 20) return res.status(400).json({ error: 'count must be 1 to 20' });
+    if (!Number.isInteger(days) || days < 1 || days > 30) return res.status(400).json({ error: 'validDays must be 1 to 30' });
+    if (!api.linked.has(user)) return res.status(404).json({ error: 'no_linked_device' });
+    const key = `${user}\n${scopeId}`;
+    const row = api.devicePacks.get(key) || { nextIndex: 1, epoch: '0123456789abcdef', revoked: false, used: [] };
+    if (row.revoked) return res.status(409).json({ error: 'scope_revoked' });
+    const first = row.nextIndex;
+    row.nextIndex += count;
+    api.devicePacks.set(key, row);
+    const slots: Array<{ index: number; salt: string; digest: string; qr: string; qrTerminal: string }> = [];
+    for (let index = first; index < first + count; index++) {
+      const salt = crypto.randomBytes(16);
+      const digest = crypto.pbkdf2Sync(devicePackCode(index), Buffer.concat([salt, Buffer.from(`:${index}`)]), 1000, 16, 'sha256');
+      slots.push({ index, salt: salt.toString('base64'), digest: digest.toString('base64'), qr: `TQ4:SLOT${index}`, qrTerminal: '█▀▀█\n█▄▄█' });
+    }
+    res.json({
+      scope: { id: scopeId, name, epoch: row.epoch }, account,
+      validUntil: new Date(Date.now() + days * 86400000).toISOString(), codeLength: 10,
+      kdf: { name: 'pbkdf2-sha256', iterations: 1000, length: 16 }, slots,
+    });
+  });
+  app.post('/offline/device-packs/revoke', (req, res) => {
+    const b = req.body || {};
+    const wanted = deviceScopeOf(b.scopeId !== undefined ? b.scopeId : b.scope && b.scope.id);
+    if (!wanted) return res.status(400).json({ error: 'scopeId is required' });
+    const only = b.externalUsername === undefined ? null : deviceUserOf(b.externalUsername);
+    if (b.externalUsername !== undefined && !only) return res.status(400).json({ error: 'externalUsername must be a user name' });
+    let revoked = 0;
+    for (const [key, row] of api.devicePacks) {
+      const [user, scopeId] = key.split('\n');
+      if (scopeId === wanted && (!only || user === only) && !row.revoked) { row.revoked = true; revoked++; }
+    }
+    res.json({ revoked });
+  });
+  app.post('/offline/device-packs/report', (req, res) => {
+    const b = req.body || {};
+    const scopeId = deviceScopeOf(b.scopeId !== undefined ? b.scopeId : b.scope && b.scope.id);
+    const user = deviceUserOf(b.externalUsername);
+    if (!scopeId || !user) return res.status(400).json({ error: 'scopeId and externalUsername are required' });
+    if (!Array.isArray(b.used) || !b.used.length || b.used.length > 100) return res.status(400).json({ error: 'used: 1 to 100 slots' });
+    const row = api.devicePacks.get(`${user}\n${scopeId}`);
+    if (!row) return res.status(404).json({ error: 'unknown_scope' });
+    const now = Date.now();
+    const seen = new Set<number>();
+    const used = b.used.filter((u: any) => {
+      const at = u && typeof u.at === 'string' ? Date.parse(u.at) : NaN;
+      const ok = u && Number.isInteger(u.index) && u.index >= 1 && u.index < row.nextIndex && !seen.has(u.index)
+        && Number.isFinite(at) && at <= now + 5 * 60000 && at >= now - 60 * 86400000;
+      if (ok) seen.add(u.index);
+      return ok;
+    });
+    row.used.push(...used);
+    res.json({ recorded: used.length, ignored: b.used.length - used.length });
   });
   app.post('/offline/totp/verify', (req, res) => {
     if (req.body.requestId && api.requests.find((x) => x.id === req.body.requestId)?.status === 'REJECTED') return res.status(410).json({ approved: false, reason: 'request_rejected' });

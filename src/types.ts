@@ -254,14 +254,32 @@ export interface OfflineChallengeOptions {
   requestId?: string;
   /** Ask for number matching on a standalone QR (implied when `requestId` points at a push that has one). */
   requireNumberMatch?: boolean;
+  /**
+   * `'compact'`: a smaller QR (`qr` starts with `TQ3:`, base45) for terminals and small screens. Same
+   * challenge and same 7-character code; it carries no location block, so put what the phone should
+   * show in `details`. Default `'standard'` (`TQ2.`).
+   */
+  qrFormat?: OfflineQrFormat;
+  /** Also return `qrTerminal`: the QR drawn with Unicode half blocks, ready to print in a terminal. */
+  includeQrTerminal?: boolean;
 }
+
+/** The offline QR's format: `'standard'` (`TQ2.`) or `'compact'` (`TQ3:`, for terminals and small screens). */
+export type OfflineQrFormat = 'standard' | 'compact';
 
 export interface OfflineChallengeResponse {
   challengeId: string;
-  /** QR text (`TQ2.…`, encrypted for the user's phone; nothing in it is readable) — draw it as a QR code if you don't use `qrDataUrl`. */
+  /** QR text (`TQ2.…`, or `TQ3:…` for the compact format; encrypted for the user's phone, nothing in it is readable) — draw it as a QR code if you don't use `qrDataUrl`. */
   qr: string;
+  /** The format of `qr`. */
+  qrFormat?: OfflineQrFormat;
   /** `data:image/png;base64,…` ready for `<img src>`; null when `includeQrImage: false`. */
   qrDataUrl: string | null;
+  /**
+   * Only with `includeQrTerminal: true`: the QR drawn with Unicode half blocks (lines separated by
+   * `\n`), ready to print in a terminal; null when it could not be drawn.
+   */
+  qrTerminal?: string | null;
   expiresAt: string;
   expiresInSeconds: number;
   /** True when the workspace allows the time-based code fallback (no camera). */
@@ -290,9 +308,29 @@ export interface OfflineTotpVerifyOptions {
   requestId?: string;
 }
 
+/**
+ * What outage codes are for: one organization, or your own outage server(s).
+ * Each scope has its own codes, so digests fetched for one scope are worthless
+ * for any other, and `verifyTotp()` never accepts an outage code.
+ */
+export interface OfflineOutageScope {
+  /** 1-64 characters of a-z, 0-9, ".", "_", "-" (compared in lower case). Keep it stable. */
+  id: string;
+  /**
+   * 1-80 characters, shown on the user's phone under the normal time-based
+   * code: "<name>: code for when Touchque can't be reached".
+   */
+  name: string;
+}
+
 export interface OfflineTotpVerifiersOptions {
   /** Up to 1,000 users; users x steps at most 24,000 a call. */
   externalUsernames: string[];
+  /**
+   * Required: the organization or server these codes are for. The user's
+   * phone shows this scope's code once a call has named it for them.
+   */
+  scope: OfflineOutageScope;
   /** First 30-second step (default: the current one). */
   fromStep?: number;
   /** How many steps, 1-480 (default 480: 4 hours). */
@@ -301,11 +339,11 @@ export interface OfflineTotpVerifiersOptions {
 
 export interface OfflineTotpVerifierUser {
   externalUsername: string;
-  /** This user's first step (later than asked when earlier steps were used). */
+  /** This user's first step. */
   fromStep: number;
   /** Base64, 16 bytes. */
   salt: string;
-  /** Base64: kdf.length bytes per digest, two per step from fromStep (the anchored and the unanchored code). */
+  /** Base64: kdf.length bytes per digest, digestsPerStep digests per step from fromStep. */
   digests: string;
 }
 
@@ -314,8 +352,12 @@ export interface OfflineTotpVerifiersResult {
   fromStep: number;
   steps: number;
   notAfterStep: number;
+  /** The scope as Touchque stored it (id in lower case, name cleaned). */
+  scope?: OfflineOutageScope;
+  /** Digests per step: 1, the scope's outage code (answers without it had 2). */
+  digestsPerStep?: number;
   kdf: { name: 'pbkdf2-sha256'; iterations: number; length: number };
-  /** Only users who can use time-based codes now. */
+  /** Only users who can use time-based codes now and whose phone shows this scope. */
   users: OfflineTotpVerifierUser[];
 }
 
@@ -328,6 +370,97 @@ export interface OfflineVerifyResult {
   challengeId?: string;
   externalUsername?: string;
   type?: string;
+}
+
+/** The device an offline sign-in pack is for (a laptop, a kiosk, a field tablet). */
+export interface OfflineDeviceScope {
+  /**
+   * 1-64 characters of a-z, 0-9, ".", "_", "-", starting with a letter or a digit (compared in lower
+   * case). One id per device for as long as it is installed; a reinstalled device gets a new one.
+   */
+  id: string;
+  /** 1-80 characters: the device's name, shown on the person's phone. */
+  name: string;
+}
+
+export interface OfflineDevicePackOptions {
+  externalUsername: string;
+  scope: OfflineDeviceScope;
+  /** The account the person signs in to on that device (`ACME\jane`), 1-255 characters, shown on the phone. */
+  account: string;
+  /** How many new slots (offline sign-ins), 1-20 (default 10). */
+  count?: number;
+  /** How long the slots are valid for, from now: 1-30 days (default 14). */
+  validDays?: number;
+}
+
+/** How the slot digests were made: PBKDF2-SHA256 with this many iterations and bytes. */
+export interface OfflineDeviceKdf {
+  name: 'pbkdf2-sha256';
+  iterations: number;
+  length: number;
+}
+
+/** One offline sign-in: the slow digest of its 10-character code and the QR only the person's phone opens. */
+export interface OfflineDeviceSlot {
+  /** The slot number; Touchque never issues an index twice. */
+  index: number;
+  /** Base64. */
+  salt: string;
+  /** Base64: PBKDF2-SHA256(code, salt || ":" || index, kdf.iterations, kdf.length). */
+  digest: string;
+  /** The slot QR (`TQ4:`): show it on the device's screen; only the person's phone can open it. */
+  qr: string;
+  /** The same QR drawn with Unicode half blocks (lines separated by `\n`), for a terminal; null when it could not be drawn. */
+  qrTerminal?: string | null;
+}
+
+/** A device's next offline sign-ins for one person. Nothing in it can produce a code. */
+export interface OfflineDevicePack {
+  /** The scope as Touchque stored it (id in lower case, name cleaned) and its epoch (random per person and device). */
+  scope: OfflineDeviceScope & { epoch: string };
+  account: string;
+  /** ISO 8601: the slots are not valid after this time. */
+  validUntil: string;
+  /** Characters of a slot's code (10). */
+  codeLength: number;
+  kdf: OfflineDeviceKdf;
+  slots: OfflineDeviceSlot[];
+}
+
+export interface OfflineDeviceRevokeOptions {
+  /** The device's scope id. */
+  scopeId: string;
+  /** Only this person's packs on the device; leave it out to revoke every person's. */
+  externalUsername?: string;
+  /** Why, up to 64 characters (`lost`, `stolen`, `reinstalled`; default `revoked`). */
+  reason?: string;
+}
+
+export interface OfflineDeviceRevokeResult {
+  /** How many packs (one per person on the device) were revoked. */
+  revoked: number;
+}
+
+/** A slot the device accepted while it had no network. */
+export interface OfflineDeviceUse {
+  index: number;
+  /** When the person signed in (a Date, or an ISO 8601 string): within the last 60 days. */
+  at: Date | string;
+}
+
+export interface OfflineDeviceReportOptions {
+  scopeId: string;
+  externalUsername: string;
+  /** 1-100 slots. */
+  used: OfflineDeviceUse[];
+}
+
+export interface OfflineDeviceReportResult {
+  /** Slots recorded (one OFFLINE_DEVICE_SIGN_IN log row each). */
+  recorded: number;
+  /** Slots left out: an index never issued or repeated, or a time more than 60 days ago or in the future. */
+  ignored: number;
 }
 
 // ─── Login Resource ──────────────────────────────────────────────
@@ -420,17 +553,17 @@ export interface LoginRequestOptions {
    */
   clientSignals?: string;
   /**
-   * The page's device report from \`@touchque/web\` (\`deviceRisk.collect({ purpose })\`),
-   * passed through untouched. Used only when your workspace turned Device risk
-   * on: its signals only ever ask for more (never silent, number matching or a
-   * passkey), and a device your admin marked "step up always" asks at once.
-   * Collect it only on sign-in, sign-up, password-reset and approval pages,
-   * and name it in your privacy notice.
+   * The Touchque Device Risk report (from the Device Risk SDK's tag or
+   * collect call), passed through untouched; optional. Used only when your
+   * workspace turned Device risk on: its signals only ever ask for more
+   * (never silent, number matching or a passkey), and a device your admin
+   * marked "step up always" asks at once.
    */
   deviceRisk?: string;
   /**
-   * The page's identification from \`@touchque/web\` (\`deviceRisk.identify()\`'s
-   * requestId): preferred over \`deviceRisk\`. Usable for this account only.
+   * The Touchque Device Risk identification (from the Device Risk SDK's tag
+   * or identify call); optional. Preferred over \`deviceRisk\`. Usable for
+   * this account only.
    */
   deviceRiskRequestId?: string;
   /**
@@ -658,9 +791,9 @@ export interface RiskCheckOptions {
   browserProof?: string;
   /** The end user's page check from `@touchque/web` (`startClientSignals().encode()`): software driving the browser is never silent. */
   clientSignals?: string;
-  /** The page's device report from `@touchque/web` (`deviceRisk.collect({ purpose: 'sign_in' })`): a device signal is never silent. */
+  /** The Touchque Device Risk report (from the Device Risk SDK's tag or collect call), passed through untouched; optional. A device signal is never silent. */
   deviceRisk?: string;
-  /** The page's identification (`deviceRisk.identify()`'s requestId), preferred over `deviceRisk`. */
+  /** The Touchque Device Risk identification (from the Device Risk SDK's tag or identify call); optional. Preferred over `deviceRisk`. */
   deviceRiskRequestId?: string;
   /**
    * Your own limit on how long ago the last phone approval in this browser
@@ -950,10 +1083,6 @@ export const WebhookEvents = {
   DEVICE_UNLINKED: 'DEVICE_UNLINKED',
   PASSKEY_REGISTERED: 'PASSKEY_REGISTERED',
   PASSKEY_DELETED: 'PASSKEY_DELETED',
-  /** Device risk: an identification or a deviceRisk.check raised a signal that asks for more (enforced or in shadow). Never a trait. */
-  DEVICE_RISK_SIGNAL: 'DEVICE_RISK_SIGNAL',
-  /** Device risk: an alert rule of the workspace went off (a sign-up burst, many accounts, a tampered-browser spike). */
-  DEVICE_RISK_ALERT: 'DEVICE_RISK_ALERT',
   /** After the call, the user confirmed a provisional approval was theirs: critical actions are allowed again. */
   APPROVAL_RECONFIRMED: 'APPROVAL_RECONFIRMED',
   /** The user took an approval back (`reason`: `COACHED` or `UNDO`): end the session or stop the action built on it. */
@@ -1203,222 +1332,6 @@ export interface RefuseQrPairingOptions {
   caseCode?: string;
   /** Your code for the computer (`ABC-123`), shown on the phone. */
   deviceCode?: string;
-}
-
-// ── Device risk ─────────────────────────────────────────────────────────────
-
-/** The page a device report comes from. Device risk is for these pages only. */
-export type DeviceRiskEvent = 'sign_in' | 'sign_up' | 'password_reset' | 'approval';
-
-/** `deviceRisk.check(requestId, options)`: everything but the page's requestId. */
-export interface DeviceRiskCheckRequest {
-  /** Instead of a requestId: the page's report (`deviceRisk.collect()`), relayed untouched. */
-  deviceRisk?: string | null;
-  /** What the page is (default `'sign_in'`). */
-  event?: DeviceRiskEvent;
-  /** The account the page is for, when there is one (accounts per visitor). One account per identification. */
-  externalUsername?: string;
-  /** The end user's address; default: the address the browser identified from. */
-  clientIp?: string;
-}
-
-export interface DeviceRiskCheckOptions {
-  /**
-   * The page's identification: the `touchque_request_id` form field the
-   * script tag fills, or `deviceRisk.identify()` in `@touchque/web`. As it
-   * came: missing or empty is answered `report: 'missing'`.
-   */
-  requestId?: string | null;
-  /** Or the page's report (`deviceRisk.collect()`), relayed untouched. */
-  deviceRisk?: string | null;
-  /** What the page is (default `'sign_in'`). */
-  event?: DeviceRiskEvent;
-  /** The account the page is for, when there is one (accounts per visitor). One account per identification. */
-  externalUsername?: string;
-  /** The end user's address; default: the address the browser identified from. */
-  clientIp?: string;
-}
-
-/** A device signal. Each one only ever asks for more; none blocks. */
-export interface DeviceRiskSignal {
-  /**
-   * `device_tampered`, `device_virtual`, `device_geo_mismatch`, `device_many_accounts`,
-   * `device_signup_burst`, `device_id_resets`, `device_many_countries`, `device_wrong_site`,
-   * `device_report_replayed`, `device_private_window` (context only), `device_step_up_by_admin`,
-   * `device_identification_missing` (the page sent no identification, or one that does not verify),
-   * `device_pointer_synthetic` (the pointer or a finger moved like software), `device_new_storage_burst`
-   * and `device_network_signup_burst` (many new browsers, or sign-ups, in a day from phones like this
-   * one on this network). New codes are added in minor versions.
-   */
-  code: string;
-  text: string;
-  /** What a step-up for it should be; `none`: context only. */
-  strength: 'number_match' | 'passkey' | 'none';
-  /** Scored now; false: reported only (shadow) until Touchque enforces it. */
-  enforced?: boolean;
-  evidence?: Record<string, unknown>;
-}
-
-/** The visitor as the API shows it: coarse labels only. */
-export interface DeviceRiskVisitor {
-  firstSeenAt: string;
-  lastSeenAt: string;
-  seenCount: number;
-  /** Your admin's mark. */
-  status: 'none' | 'trusted' | 'step_up';
-  labels: Record<string, unknown>;
-  matchedBy?: 'key' | 'sid' | 'traits' | 'new';
-  sealed?: boolean;
-}
-
-/** The address as the risk engine saw it for an event: the place (never coordinates), the operator, the kind of network. */
-export interface DeviceRiskNetwork {
-  countryCode: string | null;
-  region: string | null;
-  city: string | null;
-  /** How far off the place can be. */
-  accuracyKm: number | null;
-  timeZone: string | null;
-  asn: number | null;
-  /** The network operator. */
-  asnOrg: string | null;
-  /** `hosting`: a cloud or hosting network (scripts, proxies and many VPNs come from one). */
-  type: 'isp' | 'hosting' | 'tor' | 'unknown';
-  tor: boolean;
-  hosting: boolean;
-  hostingProvider: string | null;
-  /** The browser's clock is 2 h or more off the address's time zone: a VPN or proxy in another country. */
-  timezoneMismatch: boolean | null;
-}
-
-/** The visitor's counts: the risk engine's (accounts, sign-ups, countries, stored-id resets) and Touchque's identifications. */
-export interface DeviceRiskVelocity {
-  accounts24h: number | null;
-  accounts30d: number | null;
-  signUps24h: number | null;
-  countries24h: number | null;
-  idResets7d: number | null;
-  identifications1h: number | null;
-  identifications24h: number | null;
-}
-
-/** One answer to "a bot?", summing up the signals (the risk engine still decides). */
-export interface DeviceRiskBot {
-  /** `detected`: the browser says it is driven (webdriver, headless); `suspected`: the pointer moved like software, a zero-size window, software graphics. */
-  result: 'detected' | 'suspected' | 'not_detected';
-  reasons: Array<'webdriver' | 'headless' | 'pointer_synthetic' | 'zero_window' | 'soft_gpu'>;
-}
-
-/** `deviceRisk.searchEvents(options)`: a date range (7 days by default, at most 90, within the retention) and any filters. */
-export interface DeviceRiskSearchOptions {
-  /** Start: a Date, `YYYY-MM-DD` (UTC) or an ISO time. Default: 7 days before `to`. */
-  from?: Date | string;
-  /** End: a Date, `YYYY-MM-DD` (UTC, the whole day) or an ISO time. Default: now. */
-  to?: Date | string;
-  /** Only identifications that raised this signal code. */
-  signal?: string;
-  /** true: only the ones that asked for more; false: only the others. */
-  stepUp?: boolean;
-  /** The page. */
-  kind?: DeviceRiskEvent;
-  /** The page's origin, like https://shop.example.com. */
-  origin?: string;
-  /** An address or a CIDR range ('203.0.113.0/24'). A filter only: no answer carries an address. */
-  ip?: string;
-  /** The account (externalUsername). */
-  account?: string;
-  visitorId?: string;
-  requestId?: string;
-  /** The previous page's `nextCursor`, as it came. */
-  cursor?: string | null;
-  /** 1 to 100, default 25. */
-  limit?: number;
-}
-
-/** One identification in a search: no address and no raw trait. */
-export interface DeviceRiskIdentification {
-  requestId: string;
-  at: string;
-  visitorId: string;
-  kind: DeviceRiskEvent;
-  origin: string | null;
-  externalUsername: string | null;
-  country: string | null;
-  network: DeviceRiskNetwork | null;
-  confidence: number | null;
-  matchedBy: 'key' | 'sid' | 'traits' | 'new' | null;
-  sealed: boolean;
-  stepUp: boolean;
-  signals: Array<{ code: string; enforced: boolean }>;
-  caseCode: string | null;
-  bot: DeviceRiskBot | null;
-}
-
-/** One page of `deviceRisk.searchEvents()`: pass `nextCursor` back until it is null. */
-export interface DeviceRiskSearchResult {
-  events: DeviceRiskIdentification[];
-  nextCursor: string | null;
-  from: string;
-  to: string;
-}
-
-/** An identification as Touchque saw it (GET /device-risk/events/:requestId): trust this, never the page's copy. */
-export interface DeviceRiskEventResult {
-  requestId: string;
-  /** `tqv_…`: this browser in your workspace only. */
-  visitorId: string;
-  confidence: number;
-  matchedBy: 'key' | 'sid' | 'traits' | 'new';
-  sealed: boolean;
-  purpose: DeviceRiskEvent;
-  origin: string | null;
-  country: string | null;
-  createdAt: string;
-  usedAt: string | null;
-  externalUsername: string | null;
-  visitor: DeviceRiskVisitor;
-  facts: { codes: string[]; evidence: Record<string, unknown>; reset: boolean; twins: boolean; privateWindow: boolean };
-  /** The risk engine's verdict (null before the engine answered). */
-  verdict: { stepUp: boolean; wouldStepUp: boolean; requires: string; mode: string; signals: DeviceRiskSignal[]; caseCode: string | null } | null;
-  network: DeviceRiskNetwork | null;
-  velocity: DeviceRiskVelocity;
-  bot: DeviceRiskBot;
-}
-
-export interface DeviceRiskCheckResult {
-  /**
-   * What the page had sent: `ok`; `replayed` (another account, or sent twice);
-   * or no usable identification, which raises `device_identification_missing`:
-   * `missing` (none or empty: the tag removed or blocked), `unknown` (made up,
-   * or another workspace's), `expired` (over 15 minutes old), `invalid` (a
-   * relayed report that cannot be read).
-   */
-  report: 'ok' | 'replayed' | 'missing' | 'unknown' | 'expired' | 'invalid';
-  requestId: string | null;
-  /** `tqv_…`: this browser in your workspace only. */
-  visitorId: string | null;
-  confidence: number | null;
-  visitor: DeviceRiskVisitor | null;
-  /** The risk engine's counts for this visitor. */
-  counts: Record<string, number> | null;
-  /** The address (never coordinates); null without one. */
-  network: DeviceRiskNetwork | null;
-  /** The visitor's counts; null without a usable identification. */
-  velocity: DeviceRiskVelocity | null;
-  /** One answer to "a bot?"; null without a usable identification. */
-  bot: DeviceRiskBot | null;
-  signals: DeviceRiskSignal[];
-  /** Ask for more on this page (an emailed code, a passkey, a number-matched approval). Never a reason to refuse. */
-  stepUp: boolean;
-  /** A signal that asks was raised, enforced or not. */
-  wouldStepUp: boolean;
-  requires: 'none' | 'number_match' | 'passkey';
-  /** `enforce` when at least one raised signal is enforced. */
-  mode: 'shadow' | 'enforce';
-  /** The engine's state for this check; `'unavailable'` when the risk engine could not be reached and the verdict is a safe default. */
-  engine: string | null;
-  /** "Why?": the decision record, opened by this code in the dashboard. */
-  caseCode?: string;
 }
 
 /** `login.request` `reply`: what the person types back on the phone, encrypted to `key`. */
